@@ -87,10 +87,6 @@ def pam_main(argv: Optional[list[str]] = None) -> int:
     authenticator = PamAuthenticator()
     success, message = authenticator.authenticate_user(user)
 
-    if not authenticator.config.show_feedback or not sys.stderr.isatty():
-        if not success:
-            sys.stderr.write(f"[FaceUnlock] {message}\n")
-
     return 0 if success else 1
 
 

@@ -2,20 +2,25 @@
 
 Runs Face Unlock and Fingerprint reader concurrently in parallel threads:
 - Whichever modality succeeds first immediately grants authentication.
-- Non-blocking, real-time D-Bus / fprintd verification.
-- Displays compact, colorful ASCII animations while scanning.
-- Cleanly cancels and releases hardware resources upon verification or timeout.
+- Real-time PTY-based fprintd verification without I/O buffering.
+- Shows clean prompt: 'Looking for face (or use fingerprint / password)...'
+- If no fingerprint reader: 'Looking for face (or use password)...'
+- On success: Direct work! Shows nothing!
+- On failure: Shows only '[FaceUnlock] Face unlock failed' and nothing else!
 """
 
 from __future__ import annotations
 
 import os
+import pty
+import select
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 import cv2
@@ -23,7 +28,6 @@ import cv2
 from faceunlock.config import FaceUnlockConfig
 from faceunlock.engine import FaceEngine, VerificationResult
 from faceunlock.hardware import CameraDevice, CameraType, select_camera
-from faceunlock.ui import BiometricSpinner
 
 
 @dataclass
@@ -35,11 +39,12 @@ class BiometricAuthResult:
 
 
 class FingerprintVerifier:
-    """Manages asynchronous fingerprint verification via fprintd."""
+    """Manages real-time asynchronous fingerprint verification via fprintd."""
 
     def __init__(self, user: str):
         self.user = user
         self.proc: Optional[subprocess.Popen] = None
+        self._master: Optional[int] = None
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self.verified = False
@@ -59,43 +64,59 @@ class FingerprintVerifier:
                 text=True,
                 timeout=2.0,
             )
-            # Check if enrolled fingers were found
-            if res.returncode == 0 and "has no fingers enrolled" not in res.stdout:
+            if res.returncode == 0 and "has no fingers enrolled" not in res.stdout and "- #" in res.stdout:
                 return True
         except Exception:
             pass
         return False
 
     def start(self, on_match_callback=None) -> bool:
-        """Start non-blocking fingerprint verification in a worker thread."""
+        """Start non-blocking fingerprint verification using a pseudo-terminal."""
         fprint_verify_bin = shutil.which("fprintd-verify")
         if not fprint_verify_bin:
             return False
 
-        def _worker():
-            try:
-                self.proc = subprocess.Popen(
-                    [fprint_verify_bin, self.user],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=1,
-                )
-                if not self.proc.stdout:
-                    return
+        try:
+            master, slave = pty.openpty()
+            self._master = master
+            self.proc = subprocess.Popen(
+                [fprint_verify_bin, self.user],
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                close_fds=True,
+            )
+            os.close(slave)
+        except Exception as e:
+            self.error = str(e)
+            return False
 
-                for line in iter(self.proc.stdout.readline, ""):
-                    if self._stop_event.is_set():
+        def _worker():
+            buffer = ""
+            try:
+                while not self._stop_event.is_set():
+                    r, _, _ = select.select([self._master], [], [], 0.05)
+                    if not r:
+                        if self.proc and self.proc.poll() is not None:
+                            if self.proc.poll() == 0:
+                                self.verified = True
+                                if on_match_callback:
+                                    on_match_callback("FINGERPRINT")
+                            break
+                        continue
+
+                    try:
+                        chunk = os.read(self._master, 1024).decode("utf-8", errors="ignore")
+                        if not chunk:
+                            break
+                        buffer += chunk.lower()
+                        if "verify-match" in buffer:
+                            self.verified = True
+                            if on_match_callback:
+                                on_match_callback("FINGERPRINT")
+                            break
+                    except OSError:
                         break
-                    line_lower = line.lower()
-                    if "verify-match (done)" in line_lower:
-                        self.verified = True
-                        if on_match_callback:
-                            on_match_callback("FINGERPRINT")
-                        break
-                    elif "verify-no-match" in line_lower:
-                        # Mismatched finger touched; sensor can still retry
-                        pass
             except Exception as e:
                 self.error = str(e)
             finally:
@@ -113,12 +134,18 @@ class FingerprintVerifier:
                 if self.proc.poll() is None:
                     self.proc.terminate()
                     try:
-                        self.proc.wait(timeout=0.3)
+                        self.proc.wait(timeout=0.2)
                     except subprocess.TimeoutExpired:
                         self.proc.kill()
             except Exception:
                 pass
             self.proc = None
+        if self._master is not None:
+            try:
+                os.close(self._master)
+            except OSError:
+                pass
+            self._master = None
 
 
 class SimultaneousBiometrics:
@@ -132,13 +159,13 @@ class SimultaneousBiometrics:
         """Run simultaneous face unlock and fingerprint reader verification."""
         auth_event = threading.Event()
         stop_event = threading.Event()
-        result_holder = {"method": None, "message": "Verification timed out", "success": False}
+        result_holder = {"method": None, "message": "Face unlock failed", "success": False}
 
         def on_auth_success(method: str):
             if not auth_event.is_set():
                 result_holder["method"] = method
                 result_holder["success"] = True
-                result_holder["message"] = f"Access Granted ({method.capitalize()})"
+                result_holder["message"] = "Access Granted"
                 auth_event.set()
                 stop_event.set()
 
@@ -149,7 +176,17 @@ class SimultaneousBiometrics:
             fp_verifier = FingerprintVerifier(user)
             fp_verifier.start(on_match_callback=on_auth_success)
 
-        # 2. Initialize Face Verification Worker
+        # 2. Output Prompt
+        if has_fp:
+            prompt_str = "[FaceUnlock] Looking for face (or use fingerprint / password)..."
+        else:
+            prompt_str = "[FaceUnlock] Looking for face (or use password)..."
+
+        if self.config.show_feedback:
+            sys.stderr.write(prompt_str)
+            sys.stderr.flush()
+
+        # 3. Initialize Face Verification Worker
         face_failure_reason = "No face detected"
 
         def _face_worker():
@@ -158,7 +195,7 @@ class SimultaneousBiometrics:
             try:
                 camera_dev, _ = select_camera(preferred)
             except Exception as e:
-                face_failure_reason = f"Camera error: {e}"
+                face_failure_reason = f"Failed to open video capture device: {e}"
                 return
 
             cap = cv2.VideoCapture(camera_dev.path, cv2.CAP_V4L2)
@@ -205,12 +242,6 @@ class SimultaneousBiometrics:
                         require_liveness=self.config.require_liveness,
                     )
 
-                    if res.face_detected:
-                        if not res.liveness.is_live:
-                            face_failure_reason = "Spoof attack detected (presentation rejected)"
-                        elif not res.matched:
-                            face_failure_reason = "Unrecognized face"
-
                     if res.matched and res.liveness.is_live:
                         match_score += 1
                         if match_score >= min_required_matches:
@@ -226,27 +257,29 @@ class SimultaneousBiometrics:
         face_thread = threading.Thread(target=_face_worker, name="FaceWorkerThread", daemon=True)
         face_thread.start()
 
-        # 3. Main Loop: Spinner Animation & Timeout
-        spinner_msg = (
-            "Scanning face or touch sensor..."
-            if has_fp
-            else "Looking for face..."
-        )
-        spinner = BiometricSpinner(message=spinner_msg)
-
+        # 4. Main Loop: Spinner & Timeout
+        frames = ["◖ ◉ ◗", "◖ ◈ ◗", "◖ ● ◗", "◖ ◎ ◗"]
+        frame_idx = 0
         start_time = time.monotonic()
         timeout = self.config.max_timeout
 
         try:
             while not auth_event.is_set() and (time.monotonic() - start_time) < timeout:
-                if self.config.show_feedback:
-                    spinner.tick()
+                if self.config.show_feedback and sys.stderr.isatty():
+                    f = frames[frame_idx % len(frames)]
+                    frame_idx += 1
+                    sys.stderr.write(f"\r{prompt_str} \033[1;36m[{f}]\033[0m")
+                    sys.stderr.flush()
                 time.sleep(0.08)
 
             if auth_event.is_set():
                 if self.config.show_feedback:
-                    method_label = "Face Verified" if result_holder["method"] == "FACE" else "Fingerprint Verified"
-                    spinner.success(f"Access Granted ({method_label})")
+                    if sys.stderr.isatty():
+                        sys.stderr.write("\r\033[K")
+                    else:
+                        sys.stderr.write("\n")
+                    sys.stderr.flush()
+                # On success: Show nothing! Direct work!
                 return BiometricAuthResult(
                     success=True,
                     method=result_holder["method"],
@@ -255,11 +288,21 @@ class SimultaneousBiometrics:
             else:
                 stop_event.set()
                 if self.config.show_feedback:
-                    spinner.failure(face_failure_reason)
+                    if sys.stderr.isatty():
+                        sys.stderr.write("\r\033[K[FaceUnlock] Face unlock failed\n")
+                    else:
+                        sys.stderr.write("\n[FaceUnlock] Face unlock failed\n")
+                    sys.stderr.flush()
+
+                err_msg = (
+                    face_failure_reason
+                    if "failed to open" in face_failure_reason.lower()
+                    else "Face unlock failed"
+                )
                 return BiometricAuthResult(
                     success=False,
                     method=None,
-                    message=face_failure_reason,
+                    message=err_msg,
                 )
         finally:
             stop_event.set()

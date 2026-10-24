@@ -180,13 +180,10 @@ INTERACTIVE=0
 
 configure_pam() {
     if [ -f "/etc/pam.d/sudo" ]; then
-        if ! grep -q "pam_faceunlock.py" "/etc/pam.d/sudo"; then
-            [ ! -f "/etc/pam.d/sudo.faceunlock.bak" ] && cp /etc/pam.d/sudo /etc/pam.d/sudo.faceunlock.bak
-            sed -i '1s|^|auth       sufficient   pam_exec.so stdout '"$INSTALL_PREFIX"'/pam/pam_faceunlock.py\n|' /etc/pam.d/sudo
-            echo -e "  ${C_GREEN}✔${C_RESET} Enabled in /etc/pam.d/sudo (Face + Fingerprint simultaneous)"
-        else
-            echo -e "  ${C_GREEN}✔${C_RESET} /etc/pam.d/sudo is already configured"
-        fi
+        [ ! -f "/etc/pam.d/sudo.faceunlock.bak" ] && cp /etc/pam.d/sudo /etc/pam.d/sudo.faceunlock.bak
+        sed -i '/pam_faceunlock.py/d' /etc/pam.d/sudo
+        sed -i '1s|^|auth       sufficient   pam_exec.so quiet stdout '"$INSTALL_PREFIX"'/pam/pam_faceunlock.py\n|' /etc/pam.d/sudo
+        echo -e "  ${C_GREEN}✔${C_RESET} Configured /etc/pam.d/sudo with quiet stdout"
     fi
 }
 
