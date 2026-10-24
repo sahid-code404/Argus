@@ -24,9 +24,9 @@ if [ "$IS_ROOT" -eq 1 ]; then
     mkdir -p "$INSTALL_PREFIX" "$CONFIG_DIR" "$FACES_DIR" "$MODELS_DIR"
 
     # Copy files
-    cp -r "$SCRIPT_DIR/faceunlock" "$INSTALL_PREFIX/"
-    cp -r "$SCRIPT_DIR/pam" "$INSTALL_PREFIX/"
-    cp -r "$SCRIPT_DIR/models/"* "$MODELS_DIR/"
+    cp -rf "$SCRIPT_DIR/faceunlock" "$INSTALL_PREFIX/"
+    cp -rf "$SCRIPT_DIR/pam" "$INSTALL_PREFIX/"
+    cp -rf "$SCRIPT_DIR/models/"* "$MODELS_DIR/"
 
     # Setup Python environment in /opt/faceunlock/venv if uv or python3 is available
     UV_BIN="$(command -v uv 2>/dev/null || true)"
@@ -39,7 +39,7 @@ if [ "$IS_ROOT" -eq 1 ]; then
 
     if [ -n "$UV_BIN" ]; then
         echo "[*] Setting up isolated venv using $UV_BIN..."
-        "$UV_BIN" venv "$INSTALL_PREFIX/venv"
+        "$UV_BIN" venv --allow-existing "$INSTALL_PREFIX/venv"
         "$UV_BIN" pip install --python "$INSTALL_PREFIX/venv/bin/python" numpy opencv-python-headless cryptography
     elif [ -d "$SCRIPT_DIR/venv" ]; then
         echo "[*] Copying pre-built virtual environment with cryptography..."
@@ -47,9 +47,8 @@ if [ "$IS_ROOT" -eq 1 ]; then
         cp -r "$SCRIPT_DIR/venv" "$INSTALL_PREFIX/"
     fi
 
-    # Create default config if not exists
-    if [ ! -f "$CONFIG_DIR/config.ini" ]; then
-        cat <<EOF > "$CONFIG_DIR/config.ini"
+    # Update or create system config
+    cat <<EOF > "$CONFIG_DIR/config.ini"
 [camera]
 device = auto
 fallback_to_webcam = true
@@ -73,8 +72,7 @@ show_feedback = true
 models_dir = $MODELS_DIR
 data_dir = $FACES_DIR
 EOF
-        chmod 644 "$CONFIG_DIR/config.ini"
-    fi
+    chmod 644 "$CONFIG_DIR/config.ini"
 
     # Restrict faces directory permissions
     chmod 700 "$FACES_DIR"
