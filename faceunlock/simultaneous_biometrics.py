@@ -5,7 +5,7 @@ Runs Face Unlock and Fingerprint reader concurrently in parallel threads:
 - Real-time PTY-based fprintd verification without I/O buffering.
 - Runs fprintd with target user privileges and '-f any' to accept any enrolled finger.
 - Directly renders live ASCII animation on /dev/tty so PAM output displays in real time.
-- Shows clean prompt: 'Looking for face (or use fingerprint / password)...'
+- Shows clean prompt: 'Looking for face or fingerprint...'
 - If no fingerprint reader: 'Looking for face (or use password)...'
 - On success: Direct work! Shows nothing!
 - On failure: Shows only '[FaceUnlock] Face unlock failed' and nothing else!
@@ -14,6 +14,7 @@ Runs Face Unlock and Fingerprint reader concurrently in parallel threads:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import pty
 import select
 import shutil
@@ -55,34 +56,35 @@ class FingerprintVerifier:
     @staticmethod
     def is_available_for_user(user: str) -> bool:
         """Check if fprintd is installed and the user has enrolled fingerprints."""
+        # Check /var/lib/fprint/<user> directory directly if readable (instant & reliable)
+        try:
+            fprint_dir = Path(f"/var/lib/fprint/{user}")
+            if fprint_dir.exists() and any(fprint_dir.iterdir()):
+                return True
+        except Exception:
+            pass
+
+        # Check /var/lib/fprint for any user subfolder if running as root
+        try:
+            for p in Path("/var/lib/fprint").iterdir():
+                if p.is_dir() and (p.name == user or user in ("root", "")):
+                    if any(p.iterdir()):
+                        return True
+        except Exception:
+            pass
+
+        # Fallback to fprintd-list <user>
         fprint_list_bin = shutil.which("fprintd-list")
         if not fprint_list_bin:
             return False
 
-        # Drop privileges to target user if running as root
-        preexec = None
         try:
-            import pwd
-            pw = pwd.getpwnam(user)
-            target_uid = pw.pw_uid
-            target_gid = pw.pw_gid
-            if os.geteuid() == 0 and target_uid != 0:
-                def _drop():
-                    os.setgid(target_gid)
-                    os.setuid(target_uid)
-                preexec = _drop
-        except Exception:
-            pass
-
-        try:
-            cmd = [fprint_list_bin] if preexec else [fprint_list_bin, user]
             res = subprocess.run(
-                cmd,
+                [fprint_list_bin, user],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=2.0,
-                preexec_fn=preexec,
             )
             if res.returncode == 0 and "has no fingers enrolled" not in res.stdout and "- #" in res.stdout:
                 return True
@@ -186,12 +188,12 @@ class FingerprintVerifier:
             self._master = None
 
 
-def _open_tty_stream():
-    """Attempt to open /dev/tty directly so output bypasses PAM pipe buffering."""
+def _get_output_stream():
+    """Attempt to open /dev/tty directly, falling back to sys.stdout."""
     try:
         return open("/dev/tty", "w")
     except OSError:
-        return sys.stderr
+        return sys.stdout
 
 
 class SimultaneousBiometrics:
@@ -222,18 +224,13 @@ class SimultaneousBiometrics:
             fp_verifier = FingerprintVerifier(user)
             fp_verifier.start(on_match_callback=on_auth_success)
 
-        # 2. Setup TTY Stream for real-time terminal display
-        tty = _open_tty_stream() if self.config.show_feedback else None
-        is_tty = tty is not None and hasattr(tty, "isatty") and tty.isatty()
+        # 2. Setup output stream for live terminal display
+        out = _get_output_stream() if self.config.show_feedback else None
 
         if has_fp:
-            prompt_str = "[FaceUnlock] Looking for face (or use fingerprint / password)..."
+            prompt_str = "\033[1;36m[FaceUnlock]\033[0m Looking for face or fingerprint..."
         else:
-            prompt_str = "[FaceUnlock] Looking for face (or use password)..."
-
-        if tty and not is_tty:
-            tty.write(prompt_str + "\n")
-            tty.flush()
+            prompt_str = "\033[1;36m[FaceUnlock]\033[0m Looking for face (or use password)..."
 
         # 3. Initialize Face Verification Worker
         face_failure_reason = "No face detected"
@@ -306,29 +303,33 @@ class SimultaneousBiometrics:
         face_thread = threading.Thread(target=_face_worker, name="FaceWorkerThread", daemon=True)
         face_thread.start()
 
-        # 4. Main Loop: Real-Time ASCII Animation on TTY
-        frames = ["◖ ◉ ◗", "◖ ◈ ◗", "◖ ● ◗", "◖ ◎ ◗"]
-        colors = ["\033[1;36m", "\033[1;35m", "\033[1;33m", "\033[1;32m"]
+        # 4. Main Loop: Real-Time Colorful ASCII Animation
+        frames = [
+            ("\033[1;36m", "◖ ◉ ◗"),
+            ("\033[1;35m", "◖ ◈ ◗"),
+            ("\033[1;33m", "◖ ● ◗"),
+            ("\033[1;32m", "◖ ◎ ◗"),
+            ("\033[1;34m", "◖ ◐ ◗"),
+            ("\033[1;36m", "◖ ◑ ◗"),
+        ]
         frame_idx = 0
         start_time = time.monotonic()
         timeout = self.config.max_timeout
 
         try:
             while not auth_event.is_set() and (time.monotonic() - start_time) < timeout:
-                if tty and is_tty:
-                    f = frames[frame_idx % len(frames)]
-                    c = colors[frame_idx % len(colors)]
+                if out:
+                    color, symbol = frames[frame_idx % len(frames)]
                     frame_idx += 1
-                    tty.write(f"\r\033[K{prompt_str} {c}[ {f} ]\033[0m")
-                    tty.flush()
+                    out.write(f"\r\033[K{prompt_str} {color}[ {symbol} ]\033[0m")
+                    out.flush()
                 time.sleep(0.08)
 
             if auth_event.is_set():
-                if tty:
-                    if is_tty:
-                        tty.write("\r\033[K")
-                    tty.flush()
-                # On success: show NOTHING! Direct work!
+                if out:
+                    # On success: erase prompt line completely, show NOTHING! Direct work!
+                    out.write("\r\033[K")
+                    out.flush()
                 return BiometricAuthResult(
                     success=True,
                     method=result_holder["method"],
@@ -336,12 +337,9 @@ class SimultaneousBiometrics:
                 )
             else:
                 stop_event.set()
-                if tty:
-                    if is_tty:
-                        tty.write("\r\033[K[FaceUnlock] Face unlock failed\n")
-                    else:
-                        tty.write("[FaceUnlock] Face unlock failed\n")
-                    tty.flush()
+                if out:
+                    out.write("\r\033[K\033[1;33m[FaceUnlock] Face unlock failed\033[0m\n")
+                    out.flush()
 
                 err_msg = (
                     face_failure_reason
@@ -358,8 +356,8 @@ class SimultaneousBiometrics:
             if fp_verifier:
                 fp_verifier.stop()
             face_thread.join(timeout=0.5)
-            if tty and tty != sys.stderr:
+            if out and out not in (sys.stdout, sys.stderr):
                 try:
-                    tty.close()
+                    out.close()
                 except OSError:
                     pass
