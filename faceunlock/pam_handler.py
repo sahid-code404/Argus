@@ -104,7 +104,7 @@ class PamAuthenticator:
 
             consecutive_matches = 0
             # In RGB fallback mode, require continuous multi-frame anti-spoof validation
-            min_required_matches = 1 if is_ir else 4
+            min_required_matches = 1 if is_ir else 3
 
             while (time.monotonic() - start_time) < self.config.max_timeout:
                 ret, frame = cap.read()

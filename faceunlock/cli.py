@@ -221,7 +221,7 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     best_similarity = 0.0
     best_liveness: Optional[LivenessResult] = None
     consecutive_matches = 0
-    min_required_matches = 1 if is_ir else 4
+    min_required_matches = 1 if is_ir else 3
 
     try:
         while time.monotonic() - start_time < cfg.max_timeout:

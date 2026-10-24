@@ -184,7 +184,8 @@ class LivenessDetector:
 
         # Sigmoid probability
         prob_real = 1.0 / (1.0 + math.exp(-logit_diff))
-        is_real = logit_diff >= 0.0
+        # Clear spoof cutoff: digital replays and prints score strongly negative (<= -1.0)
+        is_real = logit_diff >= -0.4
 
         return prob_real, is_real, {
             "real_logit": real_logit,
