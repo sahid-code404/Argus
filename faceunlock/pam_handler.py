@@ -45,7 +45,7 @@ class PamAuthenticator:
         self.config = config or FaceUnlockConfig.load()
         self.engine = FaceEngine(
             model_dir=self.config.models_dir or None,
-            detection_threshold=0.6,
+            detection_threshold=0.45,
             cosine_threshold=self.config.cosine_threshold,
             data_dir=self.config.data_dir or None,
             min_liveness_threshold=self.config.min_liveness_score,
@@ -151,7 +151,17 @@ def pam_main(argv: Optional[list[str]] = None) -> int:
     1 = PAM_AUTH_ERR (Authentication failed or fallback needed)
     """
     args = argv or sys.argv[1:]
-    user = args[0] if args else os.environ.get("PAM_USER") or os.getlogin()
+    user = (
+        args[0]
+        if args
+        else (
+            os.environ.get("PAM_USER")
+            or os.environ.get("SUDO_USER")
+            or os.environ.get("USER")
+            or os.getlogin()
+        )
+    )
+    user = user.strip() if user else "user"
 
     authenticator = PamAuthenticator()
     success, message = authenticator.authenticate_user(user)

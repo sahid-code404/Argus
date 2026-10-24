@@ -9,10 +9,10 @@ import os
 import sys
 from pathlib import Path
 
-# Re-exec with isolated venv python if present to ensure matching C ABI
+# Re-exec with isolated venv python if present to ensure matching C ABI and packages
 BASE_DIR = Path(__file__).resolve().parent.parent
 VENV_PYTHON = BASE_DIR / "venv" / "bin" / "python"
-if VENV_PYTHON.exists() and os.path.realpath(sys.executable) != os.path.realpath(str(VENV_PYTHON)):
+if VENV_PYTHON.exists() and sys.prefix != str(BASE_DIR / "venv"):
     os.execv(str(VENV_PYTHON), [str(VENV_PYTHON)] + sys.argv)
 
 if str(BASE_DIR) not in sys.path:

@@ -61,10 +61,10 @@ class FaceEngine:
     def __init__(
         self,
         model_dir: Optional[str] = None,
-        detection_threshold: float = 0.6,
-        cosine_threshold: float = 0.40,
+        detection_threshold: float = 0.45,
+        cosine_threshold: float = 0.33,
         data_dir: Optional[str] = None,
-        min_liveness_threshold: float = 0.60,
+        min_liveness_threshold: float = 0.55,
     ):
         if model_dir is None:
             current_dir = Path(__file__).resolve().parent
