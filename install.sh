@@ -29,12 +29,21 @@ if [ "$IS_ROOT" -eq 1 ]; then
     cp -r "$SCRIPT_DIR/models/"* "$MODELS_DIR/"
 
     # Setup Python environment in /opt/faceunlock/venv if uv or python3 is available
-    if command -v uv >/dev/null 2>&1; then
-        echo "[*] Setting up isolated venv using uv..."
-        uv venv "$INSTALL_PREFIX/venv"
-        uv pip install --python "$INSTALL_PREFIX/venv/bin/python" numpy opencv-python-headless cryptography
+    UV_BIN="$(command -v uv 2>/dev/null || true)"
+    if [ -z "$UV_BIN" ] && [ -n "${SUDO_USER:-}" ]; then
+        CALLER_HOME_TEMP=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+        if [ -x "$CALLER_HOME_TEMP/.local/bin/uv" ]; then
+            UV_BIN="$CALLER_HOME_TEMP/.local/bin/uv"
+        fi
+    fi
+
+    if [ -n "$UV_BIN" ]; then
+        echo "[*] Setting up isolated venv using $UV_BIN..."
+        "$UV_BIN" venv "$INSTALL_PREFIX/venv"
+        "$UV_BIN" pip install --python "$INSTALL_PREFIX/venv/bin/python" numpy opencv-python-headless cryptography
     elif [ -d "$SCRIPT_DIR/venv" ]; then
-        echo "[*] Copying pre-built virtual environment..."
+        echo "[*] Copying pre-built virtual environment with cryptography..."
+        rm -rf "$INSTALL_PREFIX/venv"
         cp -r "$SCRIPT_DIR/venv" "$INSTALL_PREFIX/"
     fi
 
@@ -49,8 +58,8 @@ height = 480
 fps = 30
 
 [security]
-cosine_threshold = 0.363
-min_liveness_score = 0.55
+cosine_threshold = 0.40
+min_liveness_score = 0.60
 require_liveness = true
 max_timeout = 3.5
 warmup_frames = 4
@@ -108,9 +117,11 @@ EOF
     if [ -n "${SUDO_USER:-}" ]; then
         CALLER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
         if [ -d "$CALLER_HOME/.config/faceunlock/faces" ]; then
-            echo "[*] Syncing enrolled faces from $SUDO_USER..."
-            cp -n "$CALLER_HOME/.config/faceunlock/faces/"*.json "$FACES_DIR/" 2>/dev/null || true
-            chmod 600 "$FACES_DIR/"*.json 2>/dev/null || true
+            echo "[*] Syncing enrolled faces and biometric vaults from $SUDO_USER..."
+            cp -f "$CALLER_HOME/.config/faceunlock/faces/"*.vault "$FACES_DIR/" 2>/dev/null || true
+            cp -f "$CALLER_HOME/.config/faceunlock/faces/"*.json "$FACES_DIR/" 2>/dev/null || true
+            cp -f "$CALLER_HOME/.config/faceunlock/faces/.vault_secret" "$FACES_DIR/" 2>/dev/null || true
+            chmod 600 "$FACES_DIR/"* "$FACES_DIR/.vault_secret" 2>/dev/null || true
         fi
     fi
 
