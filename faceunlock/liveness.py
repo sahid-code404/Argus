@@ -73,6 +73,7 @@ class LivenessDetector:
         }
         self.frame_history: List[np.ndarray] = []
         self.landmark_history: List[np.ndarray] = []
+        self.eye_variance_history: List[float] = []
         self.max_history = 12
 
         self.neural_net: Optional[cv2.dnn.Net] = None
@@ -100,6 +101,7 @@ class LivenessDetector:
         """Clear temporal history for a fresh authentication session."""
         self.frame_history.clear()
         self.landmark_history.clear()
+        self.eye_variance_history.clear()
 
     @staticmethod
     def extract_face_roi(image: np.ndarray, face_box: np.ndarray) -> Optional[np.ndarray]:
@@ -439,6 +441,69 @@ class LivenessDetector:
             "frames": len(landmarks_list),
         }
 
+    def analyze_eye_patch_dynamics(
+        self,
+        frame: np.ndarray,
+        landmarks: np.ndarray,
+    ) -> Tuple[float, int, dict]:
+        """Passive micro-gaze & blink dynamics without requiring active user head motion."""
+        if frame is None or frame.size == 0 or landmarks is None or len(landmarks) < 4:
+            return 0.7, 0, {"status": "insufficient_data"}
+
+        h, w = frame.shape[:2]
+        r_eye = (int(landmarks[0]), int(landmarks[1]))
+        l_eye = (int(landmarks[2]), int(landmarks[3]))
+        iod = math.dist(r_eye, l_eye)
+        radius = max(3, int(iod * 0.12))
+
+        patches = []
+        for (cx, cy) in (r_eye, l_eye):
+            x1 = max(0, cx - radius)
+            y1 = max(0, cy - radius)
+            x2 = min(w, cx + radius)
+            y2 = min(h, cy + radius)
+            if x2 > x1 and y2 > y1:
+                patch = frame[y1:y2, x1:x2]
+                if len(patch.shape) == 3:
+                    patch = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+                patches.append(patch)
+
+        if not patches:
+            return 0.7, 0, {"status": "no_patches"}
+
+        patch_vars = [float(np.var(p)) for p in patches if p.size > 0]
+        current_eye_var = float(np.mean(patch_vars)) if patch_vars else 0.0
+
+        self.eye_variance_history.append(current_eye_var)
+        if len(self.eye_variance_history) > self.max_history:
+            self.eye_variance_history.pop(0)
+
+        blinks = 0
+        temporal_eye_std = 0.0
+        if len(self.eye_variance_history) >= 3:
+            temporal_eye_std = float(np.std(self.eye_variance_history))
+            mean_var = float(np.mean(self.eye_variance_history)) + 1e-6
+            for i in range(1, len(self.eye_variance_history)):
+                diff = abs(self.eye_variance_history[i] - self.eye_variance_history[i - 1])
+                if diff / mean_var > 0.35:
+                    blinks += 1
+
+        is_frozen_photo = bool(len(self.eye_variance_history) >= 4 and temporal_eye_std < 0.8)
+        if is_frozen_photo:
+            score = 0.20
+        elif blinks > 0 or temporal_eye_std > 6.0:
+            score = 0.95
+        else:
+            score = 0.75
+
+        return score, blinks, {
+            "current_eye_var": current_eye_var,
+            "temporal_eye_std": temporal_eye_std,
+            "is_frozen_photo": is_frozen_photo,
+            "eye_blinks": blinks,
+            "history_len": len(self.eye_variance_history),
+        }
+
     def evaluate_frame(
         self,
         frame: np.ndarray,
@@ -498,6 +563,11 @@ class LivenessDetector:
         # 7. Temporal motion & 3D planar homography parallax
         motion_score, blinks, motion_details = self.analyze_temporal_motion(self.landmark_history)
 
+        # 8. Passive eye micro-gaze & blink dynamics
+        eye_score, eye_blinks, eye_details = self.analyze_eye_patch_dynamics(frame, landmarks)
+        total_blinks = max(blinks, eye_blinks)
+        motion_score = float(np.clip(0.75 * motion_score + 0.25 * eye_score, 0.0, 1.0))
+
         # Weighted confidence fusion
         if is_ir_mode:
             confidence = (
@@ -523,7 +593,7 @@ class LivenessDetector:
             if not is_neural_real and self.neural_net is not None:
                 is_live = False
                 verdict = "NEURAL_PAD_SPOOF"
-            elif motion_details.get("is_static_2d") and len(self.landmark_history) >= 4:
+            elif (motion_details.get("is_static_2d") or eye_details.get("is_frozen_photo")) and len(self.landmark_history) >= 4:
                 is_live = False
                 verdict = "STATIC_2D_PHOTO"
             elif motion_details.get("is_planar_moving_2d") and len(self.landmark_history) >= 4:
@@ -547,6 +617,7 @@ class LivenessDetector:
             "frequency": freq_details,
             "color": color_details,
             "motion": motion_details,
+            "eye_dynamics": eye_details,
             "history_depth": len(self.landmark_history),
         }
 
@@ -561,6 +632,6 @@ class LivenessDetector:
             neural_score=neural_score,
             bezel_score=bezel_score,
             glare_score=glare_score,
-            blinks_detected=blinks,
+            blinks_detected=total_blinks,
             details=details,
         )

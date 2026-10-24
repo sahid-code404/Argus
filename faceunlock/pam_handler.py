@@ -49,15 +49,17 @@ class PamAuthenticator:
             cosine_threshold=self.config.cosine_threshold,
             data_dir=self.config.data_dir or None,
             min_liveness_threshold=self.config.min_liveness_score,
+            use_tpm=self.config.use_tpm,
         )
 
-    def authenticate_user(self, user: str) -> Tuple[bool, str]:
+    def authenticate_user(self, user: str, service: Optional[str] = None) -> Tuple[bool, str]:
         """Perform simultaneous biometric authentication for user.
 
         Returns (success: bool, status_message: str).
         """
-        if not self.config.pam_enabled:
-            return False, "Face unlock is disabled in configuration."
+        service_name = service or os.environ.get("PAM_SERVICE", "sudo")
+        if not self.config.is_service_enabled(service_name):
+            return False, f"Face unlock disabled for PAM service: {service_name}"
 
         if not self.engine.is_enrolled(user):
             return False, f"User '{user}' has no enrolled face vectors; skipping to next PAM module."

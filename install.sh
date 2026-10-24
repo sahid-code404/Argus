@@ -42,7 +42,7 @@ echo -e "${C_CYAN}│${C_RESET} ${C_DIM}Simultaneous Multi-Modal PAM Biometric A
 echo -e "${C_CYAN}╰──────────────────────────────────────────────────────────╯${C_RESET}\n"
 
 # 2. Hardware Discovery
-echo -e "${C_BOLD}--> Step 1/5: Detecting Biometric Hardware...${C_RESET}"
+echo -e "${C_BOLD}--> Step 1/5: Detecting Biometric Hardware & Security Roots...${C_RESET}"
 
 CAMERA_COUNT=$(find /dev -name "video*" 2>/dev/null | wc -l)
 if [ "$CAMERA_COUNT" -gt 0 ]; then
@@ -63,6 +63,18 @@ if command -v fprintd-list >/dev/null 2>&1; then
     fi
 else
     echo -e "  ${C_DIM}• Fingerprint Reader: fprintd not installed (Face unlock only)${C_RESET}"
+fi
+
+TPM_SUPPORTED=0
+if [ -e "/dev/tpmrm0" ] || [ -e "/dev/tpm0" ]; then
+    if command -v tpm2_createprimary >/dev/null 2>&1; then
+        TPM_SUPPORTED=1
+        echo -e "  ${C_GREEN}✔${C_RESET} TPM 2.0 Security Chip: Hardware detected (/dev/tpmrm0 + tpm2-tools available)"
+    else
+        echo -e "  ${C_YELLOW}⚠${C_RESET} TPM 2.0 device node present, but tpm2-tools missing (Software fallback)"
+    fi
+else
+    echo -e "  ${C_DIM}• TPM 2.0 Security Chip: Not present (Using software PBKDF2/AES-GCM encryption)${C_RESET}"
 fi
 
 # 3. Native SIMD Compilation
@@ -173,30 +185,80 @@ if [ -d "$TARGET_HOME/.config/faceunlock/faces" ]; then
 fi
 echo -e "  ${C_GREEN}✔${C_RESET} System deployment complete (/opt/faceunlock)"
 
-# 5. PAM Integration
-echo -e "\n${C_BOLD}--> Step 4/5: PAM Authentication Configuration...${C_RESET}"
+# 5. Security & PAM Integration
+echo -e "\n${C_BOLD}--> Step 4/5: Security & PAM Authentication Configuration...${C_RESET}"
 INTERACTIVE=0
 [ -t 0 ] && INTERACTIVE=1
 
-configure_pam() {
-    if [ -f "/etc/pam.d/sudo" ]; then
-        [ ! -f "/etc/pam.d/sudo.faceunlock.bak" ] && cp /etc/pam.d/sudo /etc/pam.d/sudo.faceunlock.bak
-        sed -i '/pam_faceunlock.py/d' /etc/pam.d/sudo
-        sed -i '1s|^|auth       sufficient   pam_exec.so quiet stdout '"$INSTALL_PREFIX"'/pam/pam_faceunlock.py\n|' /etc/pam.d/sudo
-        echo -e "  ${C_GREEN}✔${C_RESET} Configured /etc/pam.d/sudo with quiet stdout"
-    fi
-}
-
-if [ "$INTERACTIVE" -eq 1 ]; then
-    read -rp "Enable simultaneous Face + Fingerprint unlock for sudo? [Y/n]: " pam_ans
-    pam_ans="${pam_ans:-Y}"
-    if [[ "$pam_ans" =~ ^[Yy]$ ]]; then
-        configure_pam
+USE_TPM="false"
+if [ "$TPM_SUPPORTED" -eq 1 ]; then
+    if [ "$INTERACTIVE" -eq 1 ]; then
+        echo -e "  ${C_CYAN}[TPM 2.0]${C_RESET} Hardware key sealing provides cryptographic tamper-proofing for biometric vectors."
+        read -rp "  Seal biometric encryption keys into TPM 2.0 hardware chip? [Y/n]: " tpm_ans
+        tpm_ans="${tpm_ans:-Y}"
+        if [[ "$tpm_ans" =~ ^[Yy]$ ]]; then
+            USE_TPM="true"
+            echo -e "  ${C_GREEN}✔${C_RESET} Hardware TPM 2.0 Key Sealing ENABLED"
+        else
+            echo -e "  ${C_DIM}• Selected software key derivation (Software AES-256-GCM)${C_RESET}"
+        fi
     else
-        echo -e "  ${C_DIM}Skipped PAM configuration.${C_RESET}"
+        USE_TPM="true"
     fi
-else
-    configure_pam
+fi
+
+# Ensure config.ini reflects settings
+if [ -f "$CONFIG_DIR/config.ini" ]; then
+    sed -i "s/^use_tpm = .*/use_tpm = $USE_TPM/" "$CONFIG_DIR/config.ini" 2>/dev/null || true
+    if ! grep -q "use_tpm" "$CONFIG_DIR/config.ini"; then
+        sed -i "/\[security\]/a use_tpm = $USE_TPM" "$CONFIG_DIR/config.ini"
+    fi
+fi
+
+PYTHON_CMD="$INSTALL_PREFIX/venv/bin/python"
+
+# 1. Sudo Privilege Elevation
+ENABLE_SUDO=1
+if [ "$INTERACTIVE" -eq 1 ]; then
+    read -rp "Enable simultaneous Face + Fingerprint unlock for sudo? [Y/n]: " sudo_ans
+    sudo_ans="${sudo_ans:-Y}"
+    [[ ! "$sudo_ans" =~ ^[Yy]$ ]] && ENABLE_SUDO=0
+fi
+
+if [ "$ENABLE_SUDO" -eq 1 ]; then
+    if "$PYTHON_CMD" -m faceunlock.pam_integrator enable sudo >/dev/null 2>&1; then
+        echo -e "  ${C_GREEN}✔${C_RESET} Configured /etc/pam.d/sudo (Sudo elevation)"
+    fi
+fi
+
+# 2. GDM (GNOME Display Manager / Lock Screen)
+if [ -f "/etc/pam.d/gdm-password" ] || [ -f "/usr/lib/pam.d/gdm-password" ]; then
+    ENABLE_GDM=1
+    if [ "$INTERACTIVE" -eq 1 ]; then
+        read -rp "Enable Face Unlock for GDM Login and Lock Screen? [Y/n]: " gdm_ans
+        gdm_ans="${gdm_ans:-Y}"
+        [[ ! "$gdm_ans" =~ ^[Yy]$ ]] && ENABLE_GDM=0
+    fi
+    if [ "$ENABLE_GDM" -eq 1 ]; then
+        if "$PYTHON_CMD" -m faceunlock.pam_integrator enable gdm-password >/dev/null 2>&1; then
+            echo -e "  ${C_GREEN}✔${C_RESET} Configured /etc/pam.d/gdm-password (GDM Login & Lock Screen)"
+        fi
+    fi
+fi
+
+# 3. Polkit (GUI Administration Dialogs)
+if [ -f "/etc/pam.d/polkit-1" ] || [ -f "/usr/lib/pam.d/polkit-1" ]; then
+    ENABLE_POLKIT=1
+    if [ "$INTERACTIVE" -eq 1 ]; then
+        read -rp "Enable Face Unlock for Polkit GUI Admin Dialogs? [Y/n]: " polkit_ans
+        polkit_ans="${polkit_ans:-Y}"
+        [[ ! "$polkit_ans" =~ ^[Yy]$ ]] && ENABLE_POLKIT=0
+    fi
+    if [ "$ENABLE_POLKIT" -eq 1 ]; then
+        if "$PYTHON_CMD" -m faceunlock.pam_integrator enable polkit-1 >/dev/null 2>&1; then
+            echo -e "  ${C_GREEN}✔${C_RESET} Configured /etc/pam.d/polkit-1 (Polkit GUI Prompts)"
+        fi
+    fi
 fi
 
 # 6. Biometric Enrollment
@@ -239,7 +301,9 @@ echo -e "\n${C_GREEN}╭──────────────────�
 echo -e "${C_GREEN}│${C_RESET} ${C_BOLD}Installation Successful! Linux Face Unlock is Ready.${C_RESET}   ${C_GREEN}│${C_RESET}"
 echo -e "${C_GREEN}╰──────────────────────────────────────────────────────────╯${C_RESET}"
 echo -e " Quick Commands:"
-echo -e "  • Test verification:  ${C_CYAN}faceunlock test${C_RESET}"
-echo -e "  • Re-enroll face:     ${C_CYAN}faceunlock enroll${C_RESET}"
-echo -e "  • Camera probe:       ${C_CYAN}faceunlock probe${C_RESET}"
-echo -e "  • Sudo test:          ${C_CYAN}sudo true${C_RESET}\n"
+echo -e "  • Status & Diagnostics: ${C_CYAN}faceunlock status${C_RESET}"
+echo -e "  • Test verification:    ${C_CYAN}faceunlock test${C_RESET}"
+echo -e "  • Re-enroll face:       ${C_CYAN}faceunlock enroll${C_RESET}"
+echo -e "  • Service management:   ${C_CYAN}faceunlock service list${C_RESET}"
+echo -e "  • Camera probe:         ${C_CYAN}faceunlock probe${C_RESET}"
+echo -e "  • Sudo test:            ${C_CYAN}sudo true${C_RESET}\n"

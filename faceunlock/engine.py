@@ -66,6 +66,7 @@ class FaceEngine:
         cosine_threshold: float = 0.33,
         data_dir: Optional[str] = None,
         min_liveness_threshold: float = 0.55,
+        use_tpm: bool = False,
     ):
         if model_dir is None:
             current_dir = Path(__file__).resolve().parent
@@ -88,6 +89,7 @@ class FaceEngine:
 
         self.detection_threshold = detection_threshold
         self.cosine_threshold = cosine_threshold
+        self.use_tpm = use_tpm
 
         if data_dir is None:
             if os.geteuid() == 0:
@@ -258,6 +260,7 @@ class FaceEngine:
             vault_path=vault_path,
             camera_type=camera_type,
             model="sface_2021dec",
+            use_tpm=self.use_tpm,
         )
 
         if success:
@@ -287,7 +290,7 @@ class FaceEngine:
 
         # If .vault: decrypt directly
         if path.suffix == ".vault":
-            vectors, header = BiometricVault.load_vault(user, path)
+            vectors, header = BiometricVault.load_vault(user, path, use_tpm=self.use_tpm)
             return vectors
 
         # If legacy .json: load, migrate to .vault, and securely wipe legacy .json
@@ -311,10 +314,11 @@ class FaceEngine:
                         embeddings=vectors,
                         vault_path=vault_path,
                         camera_type=data.get("camera_type", "rgb_webcam"),
+                        use_tpm=self.use_tpm,
                     )
                     secure_wipe_file(path)
                     # Decrypt and return projected vectors
-                    loaded, _ = BiometricVault.load_vault(user, vault_path)
+                    loaded, _ = BiometricVault.load_vault(user, vault_path, use_tpm=self.use_tpm)
                     return loaded
             except Exception:
                 pass

@@ -13,6 +13,7 @@ import argparse
 import os
 import sys
 import time
+from pathlib import Path
 from typing import List, Optional
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
@@ -306,6 +307,165 @@ def cmd_remove(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
         return 1
 
 
+def cmd_status(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
+    """Show comprehensive security and runtime status."""
+    from faceunlock.pam_integrator import PamIntegrator
+    from faceunlock.tpm import TPMManager
+
+    integrator = PamIntegrator()
+    services = integrator.get_status_overview()
+
+    tpm_supported = TPMManager.is_hardware_present()
+    data_path = Path(cfg.data_dir or "/etc/faceunlock/faces")
+    tpm_sealed = (data_path / ".tpm_blob" / "tpm_pub.bin").exists() or (data_path / "tpm_pub.bin").exists()
+
+    engine = FaceEngine(
+        model_dir=cfg.models_dir or None,
+        data_dir=cfg.data_dir or None,
+        use_tpm=cfg.use_tpm,
+    )
+    users = engine.get_enrolled_users()
+
+    print("=" * 65)
+    print(" Linux Face Unlock - System Diagnostic & Security Status")
+    print("=" * 65)
+
+    state_str = "\033[92m● ACTIVE\033[0m" if cfg.pam_enabled else "\033[91m○ DISABLED (Kill-switch active)\033[0m"
+    print(f" Master Service Switch: {state_str}")
+    print(f" Security Profile:     \033[1m{cfg.security_mode.upper()}\033[0m (cosine: {cfg.cosine_threshold:.2f}, liveness: {cfg.min_liveness_score:.2f})")
+
+    selected_cam, cam_reason = select_camera(None if cfg.camera_device == "auto" else cfg.camera_device)
+    cam_color = "\033[92m" if selected_cam.is_depth or selected_cam.is_ir else "\033[96m"
+    print(f" Camera Device:        {cam_color}{selected_cam.name} ({selected_cam.path})\033[0m [{selected_cam.type_label}]")
+
+    if tpm_supported and tpm_sealed:
+        tpm_str = "\033[92m✔ TPM 2.0 Active (Hardware Master Key Sealed)\033[0m"
+    elif tpm_supported and cfg.use_tpm:
+        tpm_str = "\033[93m⚠ TPM 2.0 Supported (Key will seal on next enrollment)\033[0m"
+    elif tpm_supported:
+        tpm_str = "\033[96m• TPM 2.0 Supported (Configured for Software Storage)\033[0m"
+    else:
+        tpm_str = "\033[90m• Software AES-256-GCM / PBKDF2 (No TPM hardware)\033[0m"
+    print(f" Hardware Encryption:  {tpm_str}")
+
+    if users:
+        print(f" Enrolled Users:       \033[1m{', '.join(users)}\033[0m ({len(users)} user(s))")
+    else:
+        print(" Enrolled Users:       \033[93mNone enrolled\033[0m")
+
+    print("-" * 65)
+    print(" Configured PAM Authentication Endpoints:")
+    for srv_key, info in services.items():
+        if info["available"]:
+            status_tag = "\033[92mENABLED\033[0m" if info["enabled"] else "\033[90mDISABLED\033[0m"
+            print(f"   • {srv_key:<16} [{status_tag}]  {info['description']}")
+    print("=" * 65)
+    return 0
+
+
+def cmd_enable(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
+    """Enable Face Unlock system-wide."""
+    enforce_sudo_privilege("enable")
+    cfg.pam_enabled = True
+    cfg.save()
+    print("\033[92m[✓] Face Unlock has been ENABLED system-wide.\033[0m")
+    return 0
+
+
+def cmd_disable(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
+    """Disable Face Unlock system-wide (privacy kill-switch)."""
+    enforce_sudo_privilege("disable")
+    cfg.pam_enabled = False
+    cfg.save()
+    print("\033[93m[✓] Face Unlock has been DISABLED system-wide (privacy kill-switch active).\033[0m")
+    return 0
+
+
+def cmd_profile(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
+    """View or switch security profile."""
+    if args.profile:
+        enforce_sudo_privilege("profile")
+        mode = args.profile.lower()
+        if mode not in ("convenient", "balanced", "strict"):
+            print(f"Error: Unknown profile '{args.profile}'. Options: convenient, balanced, strict")
+            return 1
+        cfg.apply_security_mode(mode)
+        cfg.save()
+        print(f"\033[92m[✓] Security profile set to: \033[1m{mode.upper()}\033[0m")
+    print(f"Active Profile: \033[1m{cfg.security_mode.upper()}\033[0m")
+    print(f"  • Cosine Match Threshold:  {cfg.cosine_threshold:.2f}")
+    print(f"  • Minimum Liveness Score:  {cfg.min_liveness_score:.2f}")
+    print(f"  • Maximum Timeout:         {cfg.max_timeout:.1f}s")
+    return 0
+
+
+def cmd_service(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
+    """Manage PAM service integrations."""
+    from faceunlock.pam_integrator import PamIntegrator
+    integrator = PamIntegrator()
+
+    if args.action == "list" or not args.action:
+        print("=" * 65)
+        print(" Available PAM Services for Face Unlock")
+        print("=" * 65)
+        for srv, info in integrator.get_status_overview().items():
+            avail_tag = "Available" if info["available"] else "Not Found"
+            status_tag = "\033[92mENABLED\033[0m" if info["enabled"] else "\033[90mDISABLED\033[0m"
+            print(f" • {srv:<15} [{status_tag}] ({avail_tag}) - {info['description']}")
+        print("=" * 65)
+        return 0
+
+    if not args.service:
+        print("Usage: faceunlock service <enable|disable> <service-name>")
+        return 1
+
+    enforce_sudo_privilege(f"service {args.action}")
+    srv = args.service.lower().strip()
+
+    if args.action == "enable":
+        if not integrator.is_service_available(srv):
+            print(f"\033[91m[!] Service '{srv}' is not available on this system.\033[0m")
+            return 1
+        if integrator.enable_service(srv):
+            if srv == "sudo":
+                cfg.policy_sudo = True
+            elif "gdm" in srv:
+                cfg.policy_gdm = True
+            elif "polkit" in srv:
+                cfg.policy_polkit = True
+            elif srv == "login":
+                cfg.policy_login = True
+            elif any(k in srv for k in ("lock", "screensaver")):
+                cfg.policy_lockers = True
+            cfg.save()
+            print(f"\033[92m[✓] Face Unlock successfully enabled for '{srv}'.\033[0m")
+            return 0
+        else:
+            print(f"\033[91m[!] Failed to enable Face Unlock for '{srv}'. Check /etc/pam.d/ permissions.\033[0m")
+            return 1
+
+    elif args.action == "disable":
+        if integrator.disable_service(srv):
+            if srv == "sudo":
+                cfg.policy_sudo = False
+            elif "gdm" in srv:
+                cfg.policy_gdm = False
+            elif "polkit" in srv:
+                cfg.policy_polkit = False
+            elif srv == "login":
+                cfg.policy_login = False
+            elif any(k in srv for k in ("lock", "screensaver")):
+                cfg.policy_lockers = False
+            cfg.save()
+            print(f"\033[92m[✓] Face Unlock disabled for '{srv}'.\033[0m")
+            return 0
+        else:
+            print(f"\033[91m[!] Failed to disable Face Unlock for '{srv}'.\033[0m")
+            return 1
+
+    return 0
+
+
 def cmd_config(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     """View or edit configuration."""
     if args.action == "set":
@@ -327,6 +487,10 @@ def cmd_config(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
             cfg.max_timeout = float(val)
         elif key in ("pam_enabled", "pam.enabled"):
             cfg.pam_enabled = val.lower() in ("true", "1", "yes")
+        elif key in ("use_tpm", "security.use_tpm"):
+            cfg.use_tpm = val.lower() in ("true", "1", "yes")
+        elif key in ("security_mode", "security.security_mode"):
+            cfg.apply_security_mode(val)
         else:
             print(f"Unknown configuration key: {key}")
             return 1
@@ -363,6 +527,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_rem = subparsers.add_parser("remove", help="Remove enrolled user data")
     p_rem.add_argument("user", help="Username to remove")
 
+    # status
+    subparsers.add_parser("status", help="Show system status, TPM hardware state, and PAM services")
+
+    # enable / disable
+    subparsers.add_parser("enable", help="Enable Face Unlock system-wide")
+    subparsers.add_parser("disable", help="Disable Face Unlock system-wide (privacy kill-switch)")
+
+    # profile
+    p_prof = subparsers.add_parser("profile", help="View or set security profile (convenient, balanced, strict)")
+    p_prof.add_argument("profile", nargs="?", choices=["convenient", "balanced", "strict"], help="Security profile")
+
+    # service
+    p_srv = subparsers.add_parser("service", help="Manage PAM service integrations (gdm, polkit, sudo, etc.)")
+    p_srv.add_argument("action", choices=["list", "enable", "disable"], default="list", nargs="?")
+    p_srv.add_argument("service", nargs="?", help="Service name (e.g. gdm-password, polkit-1, sudo)")
+
     # config
     p_cfg = subparsers.add_parser("config", help="View or modify configuration")
     p_cfg.add_argument("action", choices=["show", "set"], default="show", nargs="?")
@@ -372,8 +552,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv or sys.argv[1:])
     cfg = FaceUnlockConfig.load()
 
-    if not args.command or args.command == "probe":
-        return cmd_probe(args if args.command else argparse.Namespace(all=False), cfg)
+    if not args.command or args.command == "status":
+        return cmd_status(args, cfg)
+    elif args.command == "probe":
+        return cmd_probe(args, cfg)
+    elif args.command == "enable":
+        return cmd_enable(args, cfg)
+    elif args.command == "disable":
+        return cmd_disable(args, cfg)
+    elif args.command == "profile":
+        return cmd_profile(args, cfg)
+    elif args.command == "service":
+        return cmd_service(args, cfg)
     elif args.command == "list":
         return cmd_list(args, cfg)
     elif args.command == "enroll":

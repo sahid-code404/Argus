@@ -32,6 +32,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+from faceunlock.tpm import TPMManager
+
 
 VAULT_VERSION = "2.0-AES256GCM"
 
@@ -71,15 +73,27 @@ def get_hardware_identity() -> bytes:
     return hashlib.sha256(raw_id).digest()
 
 
-def get_vault_secret(data_dir: Path) -> bytes:
-    """Get or generate machine-local secret salt with 0600 permissions."""
+def get_vault_secret(data_dir: Path, use_tpm: bool = False) -> bytes:
+    """Get or generate machine-local secret salt with 0600 permissions, optionally sealed in TPM 2.0."""
+    tpm_blob_dir = data_dir / ".tpm_blob"
+
+    # 1. Attempt unsealing from TPM 2.0 if requested & hardware present
+    if use_tpm and TPMManager.is_supported():
+        unsealed = TPMManager.unseal_secret(tpm_blob_dir)
+        if unsealed:
+            return unsealed
+
     secret_file = data_dir / ".vault_secret"
     if secret_file.exists():
         try:
             with open(secret_file, "rb") as f:
                 data = f.read()
                 if len(data) >= 32:
-                    return data[:32]
+                    secret = data[:32]
+                    # If TPM requested but not yet sealed, seal now
+                    if use_tpm and TPMManager.is_supported() and not (tpm_blob_dir / "tpm_pub.bin").exists():
+                        TPMManager.seal_secret(secret, tpm_blob_dir)
+                    return secret
         except Exception:
             pass
 
@@ -91,15 +105,17 @@ def get_vault_secret(data_dir: Path) -> bytes:
         fd = os.open(str(secret_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(secret)
+        if use_tpm and TPMManager.is_supported():
+            TPMManager.seal_secret(secret, tpm_blob_dir)
     except Exception:
         pass
     return secret
 
 
-def derive_encryption_key(user: str, salt: bytes, data_dir: Path) -> bytes:
+def derive_encryption_key(user: str, salt: bytes, data_dir: Path, use_tpm: bool = False) -> bytes:
     """Derive 256-bit AES-GCM key using PBKDF2-HMAC-SHA256 from hardware roots."""
     hw_id = get_hardware_identity()
-    secret = get_vault_secret(data_dir)
+    secret = get_vault_secret(data_dir, use_tpm=use_tpm)
 
     key_material = hw_id + secret + user.encode("utf-8")
     kdf = PBKDF2HMAC(
@@ -165,6 +181,7 @@ class BiometricVault:
         vault_path: Path,
         camera_type: str = "rgb_webcam",
         model: str = "sface_2021dec",
+        use_tpm: bool = False,
     ) -> bool:
         """Encrypt and save biometric embeddings with AES-256-GCM."""
         if not embeddings:
@@ -184,7 +201,7 @@ class BiometricVault:
 
         # 2. Derive key with random 16-byte KDF salt
         kdf_salt = os.urandom(16)
-        key = derive_encryption_key(user, kdf_salt, data_dir)
+        key = derive_encryption_key(user, kdf_salt, data_dir, use_tpm=use_tpm)
 
         # 3. Encrypt payload with random 12-byte nonce
         nonce = os.urandom(12)
@@ -223,7 +240,7 @@ class BiometricVault:
             return False
 
     @staticmethod
-    def load_vault(user: str, vault_path: Path) -> Tuple[List[np.ndarray], Dict]:
+    def load_vault(user: str, vault_path: Path, use_tpm: bool = False) -> Tuple[List[np.ndarray], Dict]:
         """Decrypt biometric vault using hardware key and verify integrity."""
         if not vault_path.exists():
             return [], {}
@@ -246,7 +263,7 @@ class BiometricVault:
                 return [], {"error": "hardware_mismatch_vault_locked"}
 
             aad = json.dumps(header, sort_keys=True).encode("utf-8")
-            key = derive_encryption_key(user, kdf_salt, data_dir)
+            key = derive_encryption_key(user, kdf_salt, data_dir, use_tpm=use_tpm)
             aesgcm = AESGCM(key)
 
             plaintext = aesgcm.decrypt(nonce, ciphertext, aad)

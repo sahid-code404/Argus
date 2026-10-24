@@ -32,6 +32,18 @@ class FaceUnlockConfig:
     max_timeout: float = 3.5
     warmup_frames: int = 4
     check_lid: bool = True
+    use_tpm: bool = False
+    security_mode: str = "balanced"
+
+    # Policies
+    policy_sudo: bool = True
+    policy_gdm: bool = True
+    policy_polkit: bool = True
+    policy_login: bool = True
+    policy_lockers: bool = True
+
+    # Performance
+    cache_camera_params: bool = True
 
     # PAM settings
     pam_enabled: bool = True
@@ -41,6 +53,43 @@ class FaceUnlockConfig:
     models_dir: str = ""
     data_dir: str = ""
     config_path: str = ""
+
+    def apply_security_mode(self, mode: str) -> None:
+        """Apply pre-calibrated security mode profile."""
+        m = mode.lower()
+        if m == "convenient":
+            self.security_mode = "convenient"
+            self.cosine_threshold = 0.30
+            self.min_liveness_score = 0.45
+            self.max_timeout = 2.5
+        elif m == "strict":
+            self.security_mode = "strict"
+            self.cosine_threshold = 0.40
+            self.min_liveness_score = 0.65
+            self.max_timeout = 4.0
+        else:
+            self.security_mode = "balanced"
+            self.cosine_threshold = 0.33
+            self.min_liveness_score = 0.55
+            self.max_timeout = 3.5
+
+    def is_service_enabled(self, service_name: str) -> bool:
+        """Check if Face Unlock is permitted for the given PAM service name."""
+        if not self.pam_enabled:
+            return False
+
+        name = service_name.lower().strip()
+        if "sudo" in name:
+            return self.policy_sudo
+        elif any(k in name for k in ("gdm", "sddm", "lightdm")):
+            return self.policy_gdm
+        elif "polkit" in name:
+            return self.policy_polkit
+        elif any(k in name for k in ("login", "password-auth", "system-auth")):
+            return self.policy_login
+        elif any(k in name for k in ("lock", "screensaver")):
+            return self.policy_lockers
+        return True
 
     @classmethod
     def load(cls, custom_path: Optional[str] = None) -> FaceUnlockConfig:
@@ -91,6 +140,20 @@ class FaceUnlockConfig:
             cfg.max_timeout = sec.getfloat("max_timeout", cfg.max_timeout)
             cfg.warmup_frames = sec.getint("warmup_frames", cfg.warmup_frames)
             cfg.check_lid = sec.getboolean("check_lid", cfg.check_lid)
+            cfg.use_tpm = sec.getboolean("use_tpm", cfg.use_tpm)
+            cfg.security_mode = sec.get("security_mode", cfg.security_mode)
+
+        if parser.has_section("policies"):
+            pol = parser["policies"]
+            cfg.policy_sudo = pol.getboolean("sudo", cfg.policy_sudo)
+            cfg.policy_gdm = pol.getboolean("gdm", cfg.policy_gdm)
+            cfg.policy_polkit = pol.getboolean("polkit", cfg.policy_polkit)
+            cfg.policy_login = pol.getboolean("login", cfg.policy_login)
+            cfg.policy_lockers = pol.getboolean("lockers", cfg.policy_lockers)
+
+        if parser.has_section("performance"):
+            perf = parser["performance"]
+            cfg.cache_camera_params = perf.getboolean("cache_camera_params", cfg.cache_camera_params)
 
         if parser.has_section("pam"):
             pam = parser["pam"]
@@ -126,6 +189,18 @@ class FaceUnlockConfig:
             "max_timeout": f"{self.max_timeout:.1f}",
             "warmup_frames": str(self.warmup_frames),
             "check_lid": str(self.check_lid).lower(),
+            "use_tpm": str(self.use_tpm).lower(),
+            "security_mode": self.security_mode,
+        }
+        parser["policies"] = {
+            "sudo": str(self.policy_sudo).lower(),
+            "gdm": str(self.policy_gdm).lower(),
+            "polkit": str(self.policy_polkit).lower(),
+            "login": str(self.policy_login).lower(),
+            "lockers": str(self.policy_lockers).lower(),
+        }
+        parser["performance"] = {
+            "cache_camera_params": str(self.cache_camera_params).lower(),
         }
         parser["pam"] = {
             "enabled": str(self.pam_enabled).lower(),
