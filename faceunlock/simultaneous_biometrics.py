@@ -189,11 +189,25 @@ class FingerprintVerifier:
 
 
 def _get_output_stream():
-    """Attempt to open /dev/tty directly, falling back to sys.stdout."""
+    """Locate and open the user's true interactive terminal screen to bypass PAM line buffering."""
+    # 1. Try parent process (sudo) standard descriptors
+    try:
+        ppid = os.getppid()
+        for fd in (2, 1, 0):
+            target = os.readlink(f"/proc/{ppid}/fd/{fd}")
+            if target.startswith("/dev/pts/") or target.startswith("/dev/tty"):
+                return open(f"/proc/{ppid}/fd/{fd}", "w")
+    except Exception:
+        pass
+
+    # 2. Try /dev/tty directly
     try:
         return open("/dev/tty", "w")
     except OSError:
-        return sys.stdout
+        pass
+
+    # 3. Fallback to sys.stdout
+    return sys.stdout
 
 
 class SimultaneousBiometrics:
