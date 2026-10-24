@@ -220,7 +220,7 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     passed = False
     best_similarity = 0.0
     best_liveness: Optional[LivenessResult] = None
-    consecutive_matches = 0
+    match_score = 0
     min_required_matches = 1 if is_ir else 3
 
     try:
@@ -241,19 +241,19 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
                 best_liveness = result.liveness
 
             if result.matched and result.liveness.is_live:
-                consecutive_matches += 1
+                match_score += 1
             else:
-                consecutive_matches = 0
+                match_score = max(0, match_score - 1)
 
-            status_icon = "🟢" if consecutive_matches >= min_required_matches else ("🟡" if result.face_detected else "⚪")
+            status_icon = "🟢" if match_score >= min_required_matches else ("🟡" if result.face_detected else "⚪")
             sys.stdout.write(
                 f"\r{status_icon} Match: {result.confidence:.3f}/{result.threshold:.3f} | "
                 f"PAD: {result.liveness.verdict} ({result.liveness.confidence:.2f}) | "
-                f"ValidFrames: {consecutive_matches}/{min_required_matches}   "
+                f"ValidFrames: {match_score}/{min_required_matches}   "
             )
             sys.stdout.flush()
 
-            if consecutive_matches >= min_required_matches:
+            if match_score >= min_required_matches:
                 passed = True
                 break
             time.sleep(0.02)
