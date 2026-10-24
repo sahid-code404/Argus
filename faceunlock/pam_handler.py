@@ -77,13 +77,18 @@ class PamAuthenticator:
             return False, f"Camera selection error: {e}"
 
         # Open video stream
-        # Try V4L2 backend
         cap = cv2.VideoCapture(camera_dev.path, cv2.CAP_V4L2)
         if not cap.isOpened():
-            # Try default backend
-            cap = cv2.VideoCapture(camera_dev.path)
+            if camera_dev.path.startswith("/dev/video"):
+                try:
+                    dev_num = int(camera_dev.path.replace("/dev/video", ""))
+                    cap = cv2.VideoCapture(dev_num)
+                except Exception:
+                    pass
             if not cap.isOpened():
-                return False, f"Failed to open video capture device {camera_dev.path} (camera may be in use)."
+                cap = cv2.VideoCapture(camera_dev.path)
+                if not cap.isOpened():
+                    return False, f"Failed to open video capture device {camera_dev.path} (camera may be in use)."
 
         try:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
@@ -151,16 +156,9 @@ def pam_main(argv: Optional[list[str]] = None) -> int:
     1 = PAM_AUTH_ERR (Authentication failed or fallback needed)
     """
     args = argv or sys.argv[1:]
-    user = (
-        args[0]
-        if args
-        else (
-            os.environ.get("PAM_USER")
-            or os.environ.get("SUDO_USER")
-            or os.environ.get("USER")
-            or os.getlogin()
-        )
-    )
+    user = args[0] if args else (os.environ.get("PAM_USER") or "")
+    if not user or user == "root":
+        user = os.environ.get("SUDO_USER") or user or os.environ.get("USER") or os.getlogin()
     user = user.strip() if user else "user"
 
     authenticator = PamAuthenticator()

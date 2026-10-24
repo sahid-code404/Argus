@@ -200,24 +200,26 @@ class FaceEngine:
         return 0.0
 
     def _user_face_path(self, user: str) -> Path:
-        """Locate user's biometric vault, checking .vault first then legacy .json."""
+        """Locate user's biometric vault, checking user home first then data_dir."""
         safe_user = "".join(c for c in user if c.isalnum() or c in ("-", "_"))
-        for ext in (".vault", ".json"):
-            primary = self.data_dir / f"{safe_user}{ext}"
-            if primary.exists():
-                return primary
 
-        # Fallback: check user's home ~/.config/faceunlock/faces/<user>.*
+        # Check user's home ~/.config/faceunlock/faces/<user>.*
         try:
             import pwd
             pw = pwd.getpwnam(safe_user)
             home_faces = Path(pw.pw_dir) / ".config" / "faceunlock" / "faces"
             for ext in (".vault", ".json"):
-                fallback = home_faces / f"{safe_user}{ext}"
-                if fallback.exists():
-                    return fallback
+                cand = home_faces / f"{safe_user}{ext}"
+                if cand.exists():
+                    return cand
         except Exception:
             pass
+
+        # Then check data_dir (e.g. /etc/faceunlock/faces)
+        for ext in (".vault", ".json"):
+            primary = self.data_dir / f"{safe_user}{ext}"
+            if primary.exists():
+                return primary
 
         return self.data_dir / f"{safe_user}.vault"
 

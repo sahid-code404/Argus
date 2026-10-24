@@ -50,16 +50,7 @@ def get_hardware_identity() -> bytes:
             except Exception:
                 pass
 
-    # 2. DMI System UUID (if accessible as root or readable)
-    for dmi in ["/sys/class/dmi/id/product_uuid", "/sys/class/dmi/id/board_serial"]:
-        if os.path.exists(dmi):
-            try:
-                with open(dmi, "r", encoding="utf-8") as f:
-                    components.append(f.read().strip())
-            except Exception:
-                pass
-
-    # 3. Physical network interface MAC address (e.g. wlp0s20f3, enp3s0)
+    # 2. Physical network interface MAC address (e.g. wlp0s20f3, enp3s0)
     for mac_path in sorted(glob.glob("/sys/class/net/*/address")):
         if "/lo/" in mac_path or "/veth" in mac_path or "/br-" in mac_path or "/docker" in mac_path:
             continue
