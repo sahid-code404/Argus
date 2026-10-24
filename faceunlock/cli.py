@@ -146,8 +146,8 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
 
             primary_face = faces[0]
             confidence = float(primary_face[14])
-            if confidence < 0.65:
-                print(f"\033[93m[!] Face detection confidence too low ({confidence:.2f} < 0.65). Retrying...\033[0m")
+            if confidence < 0.50:
+                print(f"\033[93m[!] Face detection confidence too low ({confidence:.2f} < 0.50). Retrying...\033[0m")
                 continue
 
             # Check liveness
