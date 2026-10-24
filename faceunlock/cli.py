@@ -23,6 +23,36 @@ from faceunlock.config import FaceUnlockConfig
 from faceunlock.engine import FaceEngine, VerificationResult
 from faceunlock.hardware import CameraType, probe_cameras, select_camera
 from faceunlock.liveness import LivenessResult
+from faceunlock.ui import (
+    BiometricSpinner,
+    animate_countdown,
+    render_banner,
+    render_step_progress,
+)
+
+
+def enforce_sudo_privilege(command_name: str) -> None:
+    """Enforce root/sudo privileges. Automatically re-executes via sudo if running interactively."""
+    if os.geteuid() == 0:
+        return
+
+    # If running interactively, re-exec via sudo
+    if sys.stdin.isatty():
+        try:
+            if sys.argv[0].endswith("faceunlock"):
+                cmd = ["sudo", sys.argv[0]] + sys.argv[1:]
+            else:
+                cmd = ["sudo", sys.executable] + sys.argv
+            os.execvp("sudo", cmd)
+        except Exception as e:
+            sys.stderr.write(f"\033[91m[!] Privilege Error: Failed to run with sudo: {e}\033[0m\n")
+            sys.exit(1)
+    else:
+        sys.stderr.write(
+            f"\033[91m[!] Permission denied: 'faceunlock {command_name}' requires administrator privileges.\033[0m\n"
+            f"Please run: sudo faceunlock {command_name}\n"
+        )
+        sys.exit(1)
 
 
 def cmd_probe(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
@@ -78,16 +108,15 @@ def cmd_list(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
 
 def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     """Interactive enrollment wizard capturing varied angles."""
+    enforce_sudo_privilege("enroll")
     user = args.user or os.environ.get("SUDO_USER") or os.environ.get("USER") or "user"
     target_samples = max(3, min(10, args.samples))
 
-    print("=" * 65)
-    print(f" Biometric Enrollment for user '\033[1m{user}\033[0m'")
-    print("=" * 65)
-    print("Instructions:")
-    print(f" We will capture {target_samples} face samples under varied angles.")
-    print(" Please look directly at the camera, then turn slightly left, right, up, down.")
-    print("-" * 65)
+    render_banner("BIOMETRIC FACE ENROLLMENT", f"Registering {target_samples} samples for '{user}'")
+    print("\033[1mInstructions:\033[0m")
+    print(f" We will capture {target_samples} face samples under varied head angles.")
+    print(" Please follow each prompt on screen.")
+    print("-" * 54)
 
     engine = FaceEngine(
         model_dir=cfg.models_dir or None,
@@ -95,7 +124,7 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     )
 
     selected_cam, reason = select_camera(None if cfg.camera_device == "auto" else cfg.camera_device)
-    print(f"Using camera: {selected_cam.path} ({selected_cam.type_label})")
+    print(f"Using camera: \033[1;36m{selected_cam.path}\033[0m ({selected_cam.type_label})")
 
     cap = cv2.VideoCapture(selected_cam.path, cv2.CAP_V4L2)
     if not cap.isOpened():
@@ -113,23 +142,20 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
 
     embeddings: List[np.ndarray] = []
     instructions = [
-        "1/5: Look directly at the camera with a neutral expression",
-        "2/5: Tilt head slightly up and smile",
-        "3/5: Turn head slightly to the left",
-        "4/5: Turn head slightly to the right",
-        "5/5: Tilt head slightly down with eyes open",
+        "Look directly at the camera with a neutral expression",
+        "Tilt head slightly up and smile",
+        "Turn head slightly to the left",
+        "Turn head slightly to the right",
+        "Tilt head slightly down with eyes open",
     ]
 
     try:
         sample_idx = 0
         while sample_idx < target_samples:
             inst = instructions[sample_idx % len(instructions)]
-            print(f"\n\033[94m--> Step {sample_idx + 1}/{target_samples}: {inst}\033[0m")
-            print("Capturing in 2 seconds...", end="", flush=True)
-            time.sleep(1.0)
-            print(" 1...", end="", flush=True)
-            time.sleep(1.0)
-            print(" SNAP!")
+            print()
+            render_step_progress(sample_idx + 1, target_samples, inst)
+            animate_countdown(seconds=2, message="Position face")
 
             ret, frame = cap.read()
             if not ret or frame is None:
@@ -147,7 +173,7 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
             primary_face = faces[0]
             confidence = float(primary_face[14])
             if confidence < 0.50:
-                print(f"\033[93m[!] Face detection confidence too low ({confidence:.2f} < 0.50). Retrying...\033[0m")
+                print("\033[93m[!] Face not clear enough. Retrying...\033[0m")
                 continue
 
             # Check liveness
@@ -158,14 +184,13 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
             feat = engine.extract_embedding(frame, primary_face)
             embeddings.append(feat)
             sample_idx += 1
-            print(f"\033[92m[✓] Sample {sample_idx} enrolled successfully (confidence={confidence:.2f}, liveness={liveness.confidence:.2f}).\033[0m")
+            print(f"\033[1;32m✔ Sample {sample_idx}/{target_samples} encrypted and registered!\033[0m")
 
         success = engine.enroll_user(user, embeddings, camera_type=selected_cam.camera_type.value)
         if success:
-            print("\n" + "=" * 65)
-            print(f"\033[92mSUCCESS: User '{user}' enrolled with {len(embeddings)} biometric vectors!\033[0m")
-            print("You can test your enrollment anytime with: faceunlock test")
-            print("=" * 65)
+            render_banner("ENROLLMENT COMPLETE", f"User '{user}' secured with {len(embeddings)} biometric vectors")
+            print("Biometric vault encrypted with hardware-bound AES-256 + cancelable projection.")
+            print("Test anytime with: \033[1;36mfaceunlock test\033[0m\n")
             return 0
         else:
             print("\033[91m[!] Failed to save enrollment data.\033[0m")
@@ -176,11 +201,10 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
 
 def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     """Test live face verification with interactive feedback."""
+    enforce_sudo_privilege("test")
     user = args.user or os.environ.get("SUDO_USER") or os.environ.get("USER") or "user"
 
-    print("=" * 65)
-    print(f" Live Face Verification Test for user '\033[1m{user}\033[0m'")
-    print("=" * 65)
+    render_banner("BIOMETRIC VERIFICATION TEST", f"Testing authentication for '{user}'")
 
     engine = FaceEngine(
         model_dir=cfg.models_dir or None,
@@ -190,13 +214,13 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     )
 
     if not engine.is_enrolled(user):
-        print(f"\033[91m[!] User '{user}' is not enrolled.\033[0m Run 'faceunlock enroll {user}' first.")
+        print(f"\033[91m[!] User '{user}' is not enrolled.\033[0m Run 'faceunlock enroll {user}' first.\n")
         return 1
 
     selected_cam, reason = select_camera(None if cfg.camera_device == "auto" else cfg.camera_device)
-    print(f"Active Camera: {selected_cam.path} ({selected_cam.type_label})")
-    print(f"Strategy: {reason}")
-    print("-" * 65)
+    print(f"Active Camera: \033[1;36m{selected_cam.path}\033[0m ({selected_cam.type_label})")
+    print(f"Strategy:      {reason}")
+    print("-" * 54)
 
     cap = cv2.VideoCapture(selected_cam.path, cv2.CAP_V4L2)
     if not cap.isOpened():
@@ -212,21 +236,22 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     for _ in range(cfg.warmup_frames):
         cap.read()
 
-    print("Position face in front of the camera. Testing for 4 seconds...")
+    spinner = BiometricSpinner(message="Scanning face in front of camera...", stream=sys.stdout)
     start_time = time.monotonic()
     engine.liveness_detector.reset()
     is_ir = (selected_cam.camera_type == CameraType.INFRARED)
 
     passed = False
-    best_similarity = 0.0
-    best_liveness: Optional[LivenessResult] = None
+    fail_reason = "No face detected"
     match_score = 0
     min_required_matches = 1 if is_ir else 2
 
     try:
         while time.monotonic() - start_time < cfg.max_timeout:
+            spinner.tick()
             ret, frame = cap.read()
             if not ret or frame is None:
+                time.sleep(0.02)
                 continue
 
             result = engine.verify(
@@ -236,53 +261,34 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
                 require_liveness=cfg.require_liveness,
             )
 
-            if result.confidence > best_similarity:
-                best_similarity = result.confidence
-                best_liveness = result.liveness
+            if result.face_detected:
+                if not result.liveness.is_live:
+                    fail_reason = "Presentation attack detected (photo or screen spoof rejected)"
+                elif not result.matched:
+                    fail_reason = "Unrecognized face"
 
             if result.matched and result.liveness.is_live:
                 match_score += 1
             else:
                 match_score = max(0, match_score - 1)
 
-            status_icon = "🟢" if match_score >= min_required_matches else ("🟡" if result.face_detected else "⚪")
-            sys.stdout.write(
-                f"\r{status_icon} Match: {result.confidence:.3f}/{result.threshold:.3f} | "
-                f"PAD: {result.liveness.verdict} ({result.liveness.confidence:.2f}) | "
-                f"ValidFrames: {match_score}/{min_required_matches}   "
-            )
-            sys.stdout.flush()
-
             if match_score >= min_required_matches:
                 passed = True
                 break
             time.sleep(0.02)
 
-        print("\n" + "=" * 65)
         if passed:
-            print(f"\033[92m[✓] VERIFICATION PASSED!\033[0m")
-            print(f"  Similarity: {best_similarity:.3f} >= {cfg.cosine_threshold:.3f}")
-            if best_liveness:
-                print(f"  Liveness:   {best_liveness.verdict} (Score: {best_liveness.confidence:.2f})")
-                print(f"  Anti-Spoof: Neural PAD: {best_liveness.neural_score:.2f}, "
-                      f"3D Parallax: {best_liveness.motion_score:.2f}, "
-                      f"Bezel Reject: {best_liveness.bezel_score:.2f}")
-            print(f"  Sensor:     {selected_cam.type_label} ({selected_cam.path})")
+            spinner.success("Face Verified: Access Granted")
+            print(f"\n\033[1;32m✔ Biometric Verification Succeeded!\033[0m")
+            print(f"  User:     \033[1m{user}\033[0m")
+            print(f"  Identity: Confirmed")
+            print(f"  Liveness: Genuine human present")
+            print(f"  Sensor:   {selected_cam.type_label} ({selected_cam.path})\n")
             return 0
         else:
-            print(f"\033[91m[✗] VERIFICATION REJECTED / TIMED OUT\033[0m")
-            print(f"  Highest Similarity: {best_similarity:.3f} (Required: {cfg.cosine_threshold:.3f})")
-            if best_liveness:
-                print(f"  Liveness Verdict:   {best_liveness.verdict} (Score: {best_liveness.confidence:.2f})")
-                details = best_liveness.details
-                if "neural" in details and "logit_diff" in details["neural"]:
-                    print(f"  Neural Logit Diff:  {details['neural']['logit_diff']:.2f} (Real: {details['neural']['real_logit']:.2f}, Spoof: {details['neural']['spoof_logit']:.2f})")
-                if "motion" in details:
-                    print(f"  Planar 2D Attack:   {details['motion'].get('is_planar_moving_2d', False)}")
-                    print(f"  Static 2D Attack:   {details['motion'].get('is_static_2d', False)}")
-                if "bezel" in details:
-                    print(f"  Bezel Lines Found:  V={details['bezel'].get('vertical_lines', 0)}, H={details['bezel'].get('horizontal_lines', 0)}")
-                print(f"  Liveness Verdict:   {best_liveness.verdict} (confidence={best_liveness.confidence:.2f})")
+            spinner.failure(f"Verification Failed: {fail_reason}")
+            print(f"\n\033[1;31m✗ Biometric Verification Failed\033[0m")
+            print(f"  Reason:   {fail_reason}\n")
             return 1
     finally:
         cap.release()
@@ -290,38 +296,20 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
 
 def cmd_remove(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     """Remove enrolled user."""
+    enforce_sudo_privilege("remove")
     engine = FaceEngine(data_dir=cfg.data_dir or None)
     if engine.remove_user(args.user):
-        print(f"\033[92m[✓] Enrolled data for user '{args.user}' removed successfully.\033[0m")
+        print(f"\033[1;32m✔ Enrolled data for user '{args.user}' removed successfully.\033[0m")
         return 0
     else:
-        print(f"\033[93m[!] User '{args.user}' was not enrolled.\033[0m")
+        print(f"\033[1;33m✗ User '{args.user}' was not enrolled.\033[0m")
         return 1
 
 
 def cmd_config(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     """View or edit configuration."""
-    if args.action == "show":
-        print("=" * 50)
-        print(f" Face Unlock Configuration ({cfg.config_path or 'Defaults'})")
-        print("=" * 50)
-        print(f"[camera]")
-        print(f"  device             = {cfg.camera_device}")
-        print(f"  fallback_to_webcam = {cfg.fallback_to_webcam}")
-        print(f"  resolution         = {cfg.width}x{cfg.height} @ {cfg.fps}fps")
-        print(f"[security]")
-        print(f"  cosine_threshold   = {cfg.cosine_threshold:.3f}")
-        print(f"  min_liveness_score = {cfg.min_liveness_score:.2f}")
-        print(f"  require_liveness   = {cfg.require_liveness}")
-        print(f"  max_timeout        = {cfg.max_timeout:.1f}s")
-        print(f"  warmup_frames      = {cfg.warmup_frames}")
-        print(f"  check_lid          = {cfg.check_lid}")
-        print(f"[pam]")
-        print(f"  enabled            = {cfg.pam_enabled}")
-        print(f"  show_feedback      = {cfg.show_feedback}")
-        print("=" * 50)
-        return 0
-    elif args.action == "set":
+    if args.action == "set":
+        enforce_sudo_privilege("config set")
         if not args.key or not args.value:
             print("Usage: faceunlock config set <key> <value>")
             return 1

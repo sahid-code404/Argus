@@ -52,7 +52,7 @@ class PamAuthenticator:
         )
 
     def authenticate_user(self, user: str) -> Tuple[bool, str]:
-        """Perform face authentication for user.
+        """Perform simultaneous biometric authentication for user.
 
         Returns (success: bool, status_message: str).
         """
@@ -65,87 +65,10 @@ class PamAuthenticator:
         if self.config.check_lid and is_laptop_lid_closed():
             return False, "Laptop lid is closed; skipping face unlock."
 
-        if self.config.show_feedback:
-            sys.stderr.write(f"\033[94m[FaceUnlock]\033[0m Looking for face (or use fingerprint / password)...\n")
-            sys.stderr.flush()
-
-        # Select camera device
-        preferred = None if self.config.camera_device == "auto" else self.config.camera_device
-        try:
-            camera_dev, selection_reason = select_camera(preferred)
-        except Exception as e:
-            return False, f"Camera selection error: {e}"
-
-        # Open video stream
-        cap = cv2.VideoCapture(camera_dev.path, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            if camera_dev.path.startswith("/dev/video"):
-                try:
-                    dev_num = int(camera_dev.path.replace("/dev/video", ""))
-                    cap = cv2.VideoCapture(dev_num)
-                except Exception:
-                    pass
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(camera_dev.path)
-                if not cap.isOpened():
-                    return False, f"Failed to open video capture device {camera_dev.path} (camera may be in use)."
-
-        try:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
-            cap.set(cv2.CAP_PROP_FPS, self.config.fps)
-
-            # Warmup camera auto-exposure and white-balance
-            for _ in range(self.config.warmup_frames):
-                ret, _ = cap.read()
-                if not ret:
-                    break
-
-            start_time = time.monotonic()
-            frames_processed = 0
-            is_ir = camera_dev.camera_type == CameraType.INFRARED
-
-            self.engine.liveness_detector.reset()
-
-            match_score = 0
-            # In RGB fallback mode, require multi-frame anti-spoof validation
-            min_required_matches = 1 if is_ir else 2
-
-            while (time.monotonic() - start_time) < self.config.max_timeout:
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    time.sleep(0.01)
-                    continue
-
-                frames_processed += 1
-                result: VerificationResult = self.engine.verify(
-                    user=user,
-                    frame=frame,
-                    is_ir_mode=is_ir,
-                    require_liveness=self.config.require_liveness,
-                )
-
-                if result.matched and result.liveness.is_live:
-                    match_score += 1
-                    if match_score >= min_required_matches:
-                        elapsed = time.monotonic() - start_time
-                        msg = (
-                            f"Face authentication verified for {user} in {elapsed:.2f}s "
-                            f"(confidence={result.confidence:.3f}, liveness={result.liveness.verdict}, "
-                            f"device={camera_dev.type_label})"
-                        )
-                        return True, msg
-                else:
-                    match_score = max(0, match_score - 1)
-
-                # Short sleep to prevent busy waiting
-                time.sleep(0.01)
-
-            elapsed = time.monotonic() - start_time
-            return False, f"Face not detected or timed out ({elapsed:.1f}s). Falling back to fingerprint / password..."
-
-        finally:
-            cap.release()
+        from faceunlock.simultaneous_biometrics import SimultaneousBiometrics
+        sim_auth = SimultaneousBiometrics(self.engine, self.config)
+        res = sim_auth.authenticate(user)
+        return res.success, res.message
 
 
 def pam_main(argv: Optional[list[str]] = None) -> int:
@@ -164,11 +87,9 @@ def pam_main(argv: Optional[list[str]] = None) -> int:
     authenticator = PamAuthenticator()
     success, message = authenticator.authenticate_user(user)
 
-    if authenticator.config.show_feedback:
-        if success:
-            sys.stderr.write(f"\033[92m[FaceUnlock]\033[0m {message}\n")
-        else:
-            sys.stderr.write(f"\033[93m[FaceUnlock]\033[0m {message}\n")
+    if not authenticator.config.show_feedback or not sys.stderr.isatty():
+        if not success:
+            sys.stderr.write(f"[FaceUnlock] {message}\n")
 
     return 0 if success else 1
 

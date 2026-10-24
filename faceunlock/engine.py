@@ -29,6 +29,7 @@ from faceunlock.crypto import (
     secure_wipe_file,
 )
 from faceunlock.liveness import LivenessDetector, LivenessResult
+from faceunlock.simd_accel import native_batch_match, native_cosine_similarity
 
 
 KNOWN_MODEL_HASHES = {
@@ -191,13 +192,7 @@ class FaceEngine:
 
     def compute_similarity(self, feat1: np.ndarray, feat2: np.ndarray) -> float:
         """Compute cosine similarity between two feature embeddings using SIMD vector dot product."""
-        f1 = feat1.flatten()
-        f2 = feat2.flatten()
-        norm1 = np.linalg.norm(f1)
-        norm2 = np.linalg.norm(f2)
-        if norm1 > 1e-6 and norm2 > 1e-6:
-            return float(np.dot(f1 / norm1, f2 / norm2))
-        return 0.0
+        return native_cosine_similarity(feat1, feat2)
 
     def _user_face_path(self, user: str) -> Path:
         """Locate user's biometric vault, checking user home first then data_dir."""
@@ -387,8 +382,8 @@ class FaceEngine:
         # 3. Super-optimized SIMD Matrix Multiplication
         # Stored vault vectors are already projected and unit-normalized
         enrolled_matrix = np.vstack(enrolled_vectors)  # (K, 128)
+        best_idx, max_similarity = native_batch_match(enrolled_matrix, live_protected)
         sim_scores = (enrolled_matrix @ live_protected.T).flatten()
-        max_similarity = float(np.max(sim_scores))
 
         is_match = bool(max_similarity >= self.cosine_threshold)
         if require_liveness and not liveness_res.is_live:
