@@ -58,8 +58,8 @@ height = 480
 fps = 30
 
 [security]
-cosine_threshold = 0.40
-min_liveness_score = 0.60
+cosine_threshold = 0.33
+min_liveness_score = 0.55
 require_liveness = true
 max_timeout = 3.5
 warmup_frames = 4

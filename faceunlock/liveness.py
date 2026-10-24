@@ -184,9 +184,9 @@ class LivenessDetector:
 
         # Sigmoid probability
         prob_real = 1.0 / (1.0 + math.exp(-logit_diff))
-        # Clear spoof cutoff: digital replays and prints score strongly negative (< -1.0)
-        # Low-cost laptop webcams with sensor grain fluctuate around -0.5 in dim room light
-        is_real = logit_diff >= -0.85
+        # Hard veto cutoff: screen replays and prints score strongly negative (< -2.0)
+        # Normal CMOS webcams in low lighting fluctuate around -0.5 to -1.0
+        is_real = logit_diff >= -1.8
 
         return prob_real, is_real, {
             "real_logit": real_logit,

@@ -40,7 +40,7 @@ def test_nonexistent_custom_config_fallback(monkeypatch):
     monkeypatch.setattr("os.path.exists", lambda p: False)
     cfg = FaceUnlockConfig.load("/nonexistent/path/config.ini")
     assert cfg.camera_device == "auto"
-    assert cfg.cosine_threshold == 0.40
+    assert cfg.cosine_threshold == 0.33
 
 
 def test_pam_authenticator_camera_open_failure(tmp_path, monkeypatch):

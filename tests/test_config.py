@@ -7,8 +7,8 @@ def test_default_config():
     cfg = FaceUnlockConfig()
     assert cfg.camera_device == "auto"
     assert cfg.fallback_to_webcam is True
-    assert cfg.cosine_threshold == 0.40
-    assert cfg.min_liveness_score == 0.60
+    assert cfg.cosine_threshold == 0.33
+    assert cfg.min_liveness_score == 0.55
     assert cfg.require_liveness is True
     assert cfg.max_timeout == 3.5
 
