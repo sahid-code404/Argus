@@ -11,6 +11,10 @@ USER_CONFIG="$HOME/.config/faceunlock"
 echo "Uninstalling Linux Face Unlock..."
 
 if [ "$(id -u)" -eq 0 ]; then
+    if [ -f "/etc/pam.d/sudo" ]; then
+        echo "[*] Removing Face Unlock from /etc/pam.d/sudo..."
+        sed -i '/pam_faceunlock.py/d' /etc/pam.d/sudo
+    fi
     rm -rf "$INSTALL_PREFIX"
     rm -f "$BIN_DIR/faceunlock"
     rm -f "/etc/udev/rules.d/99-faceunlock-camera.rules"

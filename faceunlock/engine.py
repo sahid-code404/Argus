@@ -164,7 +164,19 @@ class FaceEngine:
 
     def _user_face_path(self, user: str) -> Path:
         safe_user = "".join(c for c in user if c.isalnum() or c in ("-", "_"))
-        return self.data_dir / f"{safe_user}.json"
+        primary = self.data_dir / f"{safe_user}.json"
+        if primary.exists():
+            return primary
+        # Fallback: check user's home ~/.config/faceunlock/faces/<user>.json
+        try:
+            import pwd
+            pw = pwd.getpwnam(safe_user)
+            fallback = Path(pw.pw_dir) / ".config" / "faceunlock" / "faces" / f"{safe_user}.json"
+            if fallback.exists():
+                return fallback
+        except Exception:
+            pass
+        return primary
 
     def is_enrolled(self, user: str) -> bool:
         """Check if user has enrolled face embeddings."""
@@ -172,9 +184,13 @@ class FaceEngine:
 
     def get_enrolled_users(self) -> List[str]:
         """List all users with enrolled face models."""
-        users = []
+        users = set()
         for p in self.data_dir.glob("*.json"):
-            users.append(p.stem)
+            users.add(p.stem)
+        # Also check /home/*/.config/faceunlock/faces/*.json if running as root
+        if os.geteuid() == 0:
+            for p in Path("/home").glob("*/.config/faceunlock/faces/*.json"):
+                users.add(p.stem)
         return sorted(users)
 
     def enroll_user(

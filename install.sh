@@ -94,17 +94,37 @@ EOF
         udevadm trigger --subsystem-match=video4linux || true
     fi
 
+    # Configure PAM for sudo
+    if [ -f "/etc/pam.d/sudo" ]; then
+        if ! grep -q "pam_faceunlock.py" "/etc/pam.d/sudo"; then
+            echo "[*] Configuring /etc/pam.d/sudo for seamless Face Unlock with Fingerprint/Password fallback..."
+            [ ! -f "/etc/pam.d/sudo.faceunlock.bak" ] && cp /etc/pam.d/sudo /etc/pam.d/sudo.faceunlock.bak
+            sed -i '1s|^|auth       sufficient   pam_exec.so stdout '"$INSTALL_PREFIX"'/pam/pam_faceunlock.py\n|' /etc/pam.d/sudo
+            echo "[✓] Configured /etc/pam.d/sudo"
+        fi
+    fi
+
+    # Sync enrolled user faces from calling user if available
+    if [ -n "${SUDO_USER:-}" ]; then
+        CALLER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+        if [ -d "$CALLER_HOME/.config/faceunlock/faces" ]; then
+            echo "[*] Syncing enrolled faces from $SUDO_USER..."
+            cp -n "$CALLER_HOME/.config/faceunlock/faces/"*.json "$FACES_DIR/" 2>/dev/null || true
+            chmod 600 "$FACES_DIR/"*.json 2>/dev/null || true
+        fi
+    fi
+
     echo "================================================================="
     echo " System-wide installation complete!"
     echo " - Binary: $BIN_DIR/faceunlock"
     echo " - PAM Helper: $INSTALL_PREFIX/pam/pam_faceunlock.py"
     echo " - Config: $CONFIG_DIR/config.ini"
+    echo " - PAM Sudo: Enabled in /etc/pam.d/sudo (fallback to fingerprint active)"
     echo ""
     echo "Next steps:"
-    echo " 1. Probe your camera:       faceunlock probe"
-    echo " 2. Enroll your face:        faceunlock enroll <username>"
-    echo " 3. Test face verification:  faceunlock test <username>"
-    echo " 4. Review PAM instructions: cat $INSTALL_PREFIX/pam/faceunlock-pam.conf"
+    echo " 1. Test sudo directly:      sudo true"
+    echo " 2. Probe camera:            faceunlock probe"
+    echo " 3. Test verification:       faceunlock test"
     echo "================================================================="
 else
     echo "[*] Non-root detected. Performing local user installation..."

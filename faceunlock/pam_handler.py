@@ -65,6 +65,10 @@ class PamAuthenticator:
         if self.config.check_lid and is_laptop_lid_closed():
             return False, "Laptop lid is closed; skipping face unlock."
 
+        if self.config.show_feedback:
+            sys.stderr.write(f"\033[94m[FaceUnlock]\033[0m Looking for face (or use fingerprint / password)...\n")
+            sys.stderr.flush()
+
         # Select camera device
         preferred = None if self.config.camera_device == "auto" else self.config.camera_device
         try:
@@ -125,7 +129,7 @@ class PamAuthenticator:
                 time.sleep(0.01)
 
             elapsed = time.monotonic() - start_time
-            return False, f"Face authentication timed out after {elapsed:.2f}s ({frames_processed} frames checked)."
+            return False, f"Face not detected or timed out ({elapsed:.1f}s). Falling back to fingerprint / password..."
 
         finally:
             cap.release()
