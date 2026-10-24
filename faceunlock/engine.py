@@ -246,6 +246,7 @@ class FaceEngine:
         user: str,
         embeddings: List[np.ndarray],
         camera_type: str = "rgb_webcam",
+        model_name: str = "#1 Default",
     ) -> bool:
         """Encrypt and save user's enrolled face embeddings into biometric vault."""
         if not embeddings:
@@ -260,6 +261,7 @@ class FaceEngine:
             vault_path=vault_path,
             camera_type=camera_type,
             model="sface_2021dec",
+            model_name=model_name,
             use_tpm=self.use_tpm,
         )
 

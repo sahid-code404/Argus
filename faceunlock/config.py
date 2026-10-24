@@ -41,6 +41,7 @@ class FaceUnlockConfig:
     policy_polkit: bool = True
     policy_login: bool = True
     policy_lockers: bool = True
+    policy_sshd: bool = False
 
     # Performance
     cache_camera_params: bool = True
@@ -48,6 +49,7 @@ class FaceUnlockConfig:
     # PAM settings
     pam_enabled: bool = True
     show_feedback: bool = True
+    feedback_style: str = "animated"
 
     # Paths
     models_dir: str = ""
@@ -89,6 +91,8 @@ class FaceUnlockConfig:
             return self.policy_login
         elif any(k in name for k in ("lock", "screensaver")):
             return self.policy_lockers
+        elif "ssh" in name:
+            return self.policy_sshd
         return True
 
     @classmethod
@@ -150,6 +154,7 @@ class FaceUnlockConfig:
             cfg.policy_polkit = pol.getboolean("polkit", cfg.policy_polkit)
             cfg.policy_login = pol.getboolean("login", cfg.policy_login)
             cfg.policy_lockers = pol.getboolean("lockers", cfg.policy_lockers)
+            cfg.policy_sshd = pol.getboolean("sshd", cfg.policy_sshd)
 
         if parser.has_section("performance"):
             perf = parser["performance"]
@@ -159,6 +164,7 @@ class FaceUnlockConfig:
             pam = parser["pam"]
             cfg.pam_enabled = pam.getboolean("enabled", cfg.pam_enabled)
             cfg.show_feedback = pam.getboolean("show_feedback", cfg.show_feedback)
+            cfg.feedback_style = pam.get("feedback_style", cfg.feedback_style)
 
         if parser.has_section("paths"):
             paths = parser["paths"]
@@ -198,6 +204,7 @@ class FaceUnlockConfig:
             "polkit": str(self.policy_polkit).lower(),
             "login": str(self.policy_login).lower(),
             "lockers": str(self.policy_lockers).lower(),
+            "sshd": str(self.policy_sshd).lower(),
         }
         parser["performance"] = {
             "cache_camera_params": str(self.cache_camera_params).lower(),
@@ -205,6 +212,7 @@ class FaceUnlockConfig:
         parser["pam"] = {
             "enabled": str(self.pam_enabled).lower(),
             "show_feedback": str(self.show_feedback).lower(),
+            "feedback_style": self.feedback_style,
         }
         parser["paths"] = {
             "models_dir": self.models_dir,

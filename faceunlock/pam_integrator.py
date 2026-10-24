@@ -23,6 +23,7 @@ KNOWN_SERVICES = {
     "gdm-password": "GDM (GNOME Display Manager / Lock Screen)",
     "polkit-1": "Polkit (GUI Administration Dialogs)",
     "login": "Console / Virtual Terminal Login",
+    "sshd": "OpenSSH Daemon (SSH remote logins)",
     "sddm": "SDDM (KDE Plasma Display Manager)",
     "lightdm": "LightDM (XFCE / Cinnamon / MATE)",
     "swaylock": "Swaylock Screen Locker",

@@ -100,3 +100,13 @@ def test_secure_wipe_file(tmp_path):
     assert f.exists()
     secure_wipe_file(f)
     assert not f.exists()
+
+
+def test_biometric_vault_model_name(tmp_path):
+    vault_file = tmp_path / "model_test.vault"
+    vectors = [np.random.randn(1, 128).astype(np.float32)]
+    saved = BiometricVault.save_vault("alice", vectors, vault_file, model_name="#1 Desk Setup")
+    assert saved is True
+    decrypted, header = BiometricVault.load_vault("alice", vault_file)
+    assert len(decrypted) == 1
+    assert header.get("model_name") == "#1 Desk Setup"

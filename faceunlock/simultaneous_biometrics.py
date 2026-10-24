@@ -343,9 +343,16 @@ class SimultaneousBiometrics:
         start_time = time.monotonic()
         timeout = self.config.max_timeout
 
+        style = getattr(self.config, "feedback_style", "animated").lower()
+        if not self.config.show_feedback or style == "quiet":
+            out = None
+        elif style == "clean" and out:
+            out.write(f"{prompt_str}...\n")
+            out.flush()
+
         try:
             while not auth_event.is_set() and (time.monotonic() - start_time) < timeout:
-                if out:
+                if out and style == "animated":
                     color, symbol = frames[frame_idx % len(frames)]
                     frame_idx += 1
                     out.write(f"\r\033[K{prompt_str} {color}[ {symbol} ]\033[0m")
@@ -354,9 +361,10 @@ class SimultaneousBiometrics:
 
             if auth_event.is_set():
                 if out:
-                    # On success: erase prompt line completely, show NOTHING! Direct work!
-                    out.write("\r\033[K")
-                    out.flush()
+                    if style == "animated":
+                        # On success: erase prompt line completely, show NOTHING! Direct work!
+                        out.write("\r\033[K")
+                        out.flush()
                 return BiometricAuthResult(
                     success=True,
                     method=result_holder["method"],
@@ -365,7 +373,10 @@ class SimultaneousBiometrics:
             else:
                 stop_event.set()
                 if out:
-                    out.write("\r\033[K\033[1;33m[FaceUnlock] Face unlock failed\033[0m\n")
+                    if style == "animated":
+                        out.write("\r\033[K\033[1;33m[FaceUnlock] Face unlock failed\033[0m\n")
+                    else:
+                        out.write("\033[1;33m[FaceUnlock] Face unlock failed\033[0m\n")
                     out.flush()
 
                 err_msg = (

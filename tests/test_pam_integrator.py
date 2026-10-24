@@ -8,7 +8,7 @@ from faceunlock.pam_integrator import PamIntegrator, KNOWN_SERVICES
 def test_pam_integrator_known_services():
     integrator = PamIntegrator()
     overview = integrator.get_status_overview()
-    for srv in ("sudo", "gdm-password", "polkit-1", "login"):
+    for srv in ("sudo", "gdm-password", "polkit-1", "login", "sshd"):
         assert srv in overview
         assert "description" in overview[srv]
         assert "available" in overview[srv]

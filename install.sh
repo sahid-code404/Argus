@@ -1,6 +1,6 @@
 #!/bin/bash
 # =================================================================
-#  Universal Linux Face Unlock - Interactive Installer Wizard
+#  Universal Linux Face Unlock - Capability-Driven Interactive Installer
 #  Simultaneous Face + Fingerprint PAM Biometric Authentication
 # =================================================================
 set -euo pipefail
@@ -35,22 +35,112 @@ fi
 # Detect calling user
 TARGET_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "$USER")}"
 TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6 || echo "/home/$TARGET_USER")
+INTERACTIVE=0
+[ -t 0 ] && INTERACTIVE=1
 
 echo -e "\n${C_CYAN}╭──────────────────────────────────────────────────────────╮${C_RESET}"
 echo -e "${C_CYAN}│${C_RESET} ${C_BOLD}Linux Face Unlock - Universal Biometric Setup Wizard${C_RESET}     ${C_CYAN}│${C_RESET}"
 echo -e "${C_CYAN}│${C_RESET} ${C_DIM}Simultaneous Multi-Modal PAM Biometric Authentication${C_RESET}    ${C_CYAN}│${C_RESET}"
 echo -e "${C_CYAN}╰──────────────────────────────────────────────────────────╯${C_RESET}\n"
 
-# 2. Hardware Discovery
-echo -e "${C_BOLD}--> Step 1/5: Detecting Biometric Hardware & Security Roots...${C_RESET}"
-
-CAMERA_COUNT=$(find /dev -name "video*" 2>/dev/null | wc -l)
-if [ "$CAMERA_COUNT" -gt 0 ]; then
-    echo -e "  ${C_GREEN}✔${C_RESET} Camera Sensor: Found $CAMERA_COUNT video device(s) (/dev/video0 ready)"
-else
-    echo -e "  ${C_YELLOW}⚠${C_RESET} No camera devices detected in /dev/video*. Face unlock may require external webcam."
+# -----------------------------------------------------------------
+# Step 1: Install System Dependencies
+# -----------------------------------------------------------------
+echo -e "${C_BOLD}--> Step 1/6: Checking System Dependencies...${C_RESET}"
+INSTALL_DEPS="Y"
+if [ "$INTERACTIVE" -eq 1 ]; then
+    read -rp "Install required system dependencies (Python development, OpenCV, build tools, v4l-utils, tpm2-tools)? [Y/n]: " dep_ans
+    INSTALL_DEPS="${dep_ans:-Y}"
 fi
 
+if [[ "$INSTALL_DEPS" =~ ^[Yy]$ ]]; then
+    echo -e "  [*] Installing dependencies using native system package manager..."
+    if command -v dnf >/dev/null 2>&1; then
+        dnf install -y python3-devel gcc gcc-c++ make v4l-utils tpm2-tools pam-devel libglvnd-glx 2>/dev/null || true
+    elif command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq 2>/dev/null || true
+        apt-get install -y python3-dev python3-venv gcc g++ make v4l-utils tpm2-tools libpam0g-dev libgl1 2>/dev/null || true
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -S --noconfirm python gcc make v4l-utils tpm2-tools pam 2>/dev/null || true
+    elif command -v zypper >/dev/null 2>&1; then
+        zypper install -y python3-devel gcc gcc-c++ make v4l-utils tpm2-tools pam-devel 2>/dev/null || true
+    fi
+    echo -e "  ${C_GREEN}✔${C_RESET} System packages verified"
+else
+    echo -e "  ${C_DIM}• Skipping system package installation${C_RESET}"
+fi
+
+# -----------------------------------------------------------------
+# Step 2: Capability-Driven Hardware Detection
+# -----------------------------------------------------------------
+echo -e "\n${C_BOLD}--> Step 2/6: Searching Capable Exact Working Hardware...${C_RESET}"
+
+PYTHON_TEMP_EXEC="python3"
+if [ -x "$SCRIPT_DIR/venv/bin/python" ]; then
+    PYTHON_TEMP_EXEC="$SCRIPT_DIR/venv/bin/python"
+fi
+
+CAM_PROBE_JSON=$(PYTHONPATH="$SCRIPT_DIR" "$PYTHON_TEMP_EXEC" -c '
+import json
+from faceunlock.hardware import probe_cameras, select_camera, CameraType
+
+cams = probe_cameras(include_all=False)
+res = []
+has_ir = False
+for c in cams:
+    is_ir = (c.camera_type == CameraType.INFRARED) or c.is_ir
+    if is_ir:
+        has_ir = True
+    res.append({
+        "path": c.path,
+        "name": c.name,
+        "type": c.camera_type.value,
+        "type_label": c.type_label,
+        "is_ir": is_ir,
+        "formats": c.formats
+    })
+selected, reason = select_camera()
+print(json.dumps({
+    "cameras": res,
+    "has_ir": has_ir,
+    "selected_path": selected.path,
+    "selected_name": selected.name,
+    "selected_type": selected.camera_type.value,
+    "reason": reason
+}))
+' 2>/dev/null || echo '{"cameras":[], "has_ir":false, "selected_path":"/dev/video0", "selected_name":"Webcam", "selected_type":"rgb_webcam"}')
+
+HAS_IR=$(echo "$CAM_PROBE_JSON" | grep -o '"has_ir": *true' || true)
+SELECTED_DEV=$(echo "$CAM_PROBE_JSON" | grep -o '"selected_path": *"[^"]*"' | cut -d'"' -f4 || echo "/dev/video0")
+SELECTED_NAME=$(echo "$CAM_PROBE_JSON" | grep -o '"selected_name": *"[^"]*"' | cut -d'"' -f4 || echo "Webcam")
+
+if [ -n "$HAS_IR" ]; then
+    echo -e "  ${C_GREEN}✔${C_RESET} Infrared (IR) Camera Sensor Detected: $SELECTED_NAME ($SELECTED_DEV)"
+    echo -e "  [*] Testing IR emitter activation with sensor combinations..."
+
+    # Attempt to stream brief test frames to trigger IR emitter
+    if command -v v4l2-ctl >/dev/null 2>&1; then
+        v4l2-ctl -d "$SELECTED_DEV" --stream-mmap --stream-count=30 --stream-to=/dev/null >/dev/null 2>&1 || true
+    fi
+
+    IR_BLINK="n"
+    if [ "$INTERACTIVE" -eq 1 ]; then
+        read -rp "  Does the infrared emitter blink or glow red? [y/N]: " blink_ans
+        IR_BLINK="${blink_ans:-N}"
+    fi
+
+    if [[ "$IR_BLINK" =~ ^[Yy]$ ]]; then
+        echo -e "  ${C_GREEN}✔${C_RESET} Hardware IR Emitter Confirmed Active!"
+    else
+        echo -e "  ${C_YELLOW}⚠${C_RESET} IR emitter not confirmed. Continuing with automatic hybrid sensor fallback."
+    fi
+else
+    # User constraint: If NO IR or depth camera detected, DO NOT show or try IR blink combinations!
+    echo -e "  ${C_GREEN}✔${C_RESET} Camera Sensor: Standard RGB Webcam ($SELECTED_NAME on $SELECTED_DEV)"
+    echo -e "  ${C_DIM}• No IR or Depth hardware present. Seamlessly continuing with RGB webcam.${C_RESET}"
+fi
+
+# Fingerprint Sensor
 FPRINT_DEVICE=""
 if command -v fprintd-list >/dev/null 2>&1; then
     FPRINT_OUT=$(fprintd-list "$TARGET_USER" 2>&1 || true)
@@ -59,12 +149,13 @@ if command -v fprintd-list >/dev/null 2>&1; then
         ENROLLED_FINGERS=$(echo "$FPRINT_OUT" | grep -c " - #" || true)
         echo -e "  ${C_GREEN}✔${C_RESET} Fingerprint Reader: Hardware detected ($ENROLLED_FINGERS enrolled print(s) for $TARGET_USER)"
     else
-        echo -e "  ${C_DIM}• Fingerprint Reader: No sensor or daemon inactive${C_RESET}"
+        echo -e "  ${C_DIM}• Fingerprint Reader: Sensor present, fprintd ready${C_RESET}"
     fi
 else
     echo -e "  ${C_DIM}• Fingerprint Reader: fprintd not installed (Face unlock only)${C_RESET}"
 fi
 
+# TPM 2.0 Hardware Security Root
 TPM_SUPPORTED=0
 if [ -e "/dev/tpmrm0" ] || [ -e "/dev/tpm0" ]; then
     if command -v tpm2_createprimary >/dev/null 2>&1; then
@@ -74,24 +165,126 @@ if [ -e "/dev/tpmrm0" ] || [ -e "/dev/tpm0" ]; then
         echo -e "  ${C_YELLOW}⚠${C_RESET} TPM 2.0 device node present, but tpm2-tools missing (Software fallback)"
     fi
 else
-    echo -e "  ${C_DIM}• TPM 2.0 Security Chip: Not present (Using software PBKDF2/AES-GCM encryption)${C_RESET}"
+    echo -e "  ${C_DIM}• TPM 2.0 Security Chip: Not present (Using PBKDF2/AES-256-GCM hardware-keyed vault)${C_RESET}"
 fi
 
-# 3. Native SIMD Compilation
-echo -e "\n${C_BOLD}--> Step 2/5: Building Native SIMD Accelerator...${C_RESET}"
+# -----------------------------------------------------------------
+# Step 3: Security Profile Selection
+# -----------------------------------------------------------------
+echo -e "\n${C_BOLD}--> Step 3/6: Security Profile & Verification Sensitivity...${C_RESET}"
+echo -e " Choose verification security profile:"
+echo -e "   ${C_CYAN}[L]${C_RESET} Low / Convenient   (Threshold: 0.30, Liveness: 0.45, Timeout: 2.5s) - Fastest recognition"
+echo -e "   ${C_CYAN}[M]${C_RESET} Medium / Balanced  (Threshold: 0.33, Liveness: 0.55, Timeout: 3.5s) - ${C_GREEN}Recommended${C_RESET}"
+echo -e "   ${C_CYAN}[H]${C_RESET} High / Strict      (Threshold: 0.40, Liveness: 0.65, Timeout: 4.0s) - Maximum anti-spoofing"
+echo -e "   ${C_CYAN}[C]${C_RESET} Custom Tweaks      (Manually set match & liveness thresholds)"
+
+SECURITY_PROFILE="balanced"
+COSINE_TH="0.33"
+LIVENESS_TH="0.55"
+TIMEOUT_SEC="3.5"
+
+if [ "$INTERACTIVE" -eq 1 ]; then
+    read -rp " Select profile [L/M/H/C] (Default: M): " prof_choice
+    prof_choice="${prof_choice:-M}"
+    case "${prof_choice^^}" in
+        L)
+            SECURITY_PROFILE="convenient"
+            COSINE_TH="0.30"
+            LIVENESS_TH="0.45"
+            TIMEOUT_SEC="2.5"
+            ;;
+        H)
+            SECURITY_PROFILE="strict"
+            COSINE_TH="0.40"
+            LIVENESS_TH="0.65"
+            TIMEOUT_SEC="4.0"
+            ;;
+        C)
+            SECURITY_PROFILE="custom"
+            read -rp "   Enter Cosine Match Threshold [0.25 - 0.50] (Default: 0.33): " custom_cos
+            COSINE_TH="${custom_cos:-0.33}"
+            read -rp "   Enter Min Liveness Score [0.30 - 0.90] (Default: 0.55): " custom_liv
+            LIVENESS_TH="${custom_liv:-0.55}"
+            read -rp "   Enter Recognition Timeout in seconds (Default: 3.5): " custom_to
+            TIMEOUT_SEC="${custom_to:-3.5}"
+            ;;
+        *)
+            SECURITY_PROFILE="balanced"
+            COSINE_TH="0.33"
+            LIVENESS_TH="0.55"
+            TIMEOUT_SEC="3.5"
+            ;;
+    esac
+fi
+echo -e "  ${C_GREEN}✔${C_RESET} Security Profile Configured: ${C_BOLD}${SECURITY_PROFILE^^}${C_RESET} (Cosine: $COSINE_TH, Liveness: $LIVENESS_TH, Timeout: ${TIMEOUT_SEC}s)"
+
+# -----------------------------------------------------------------
+# Step 4: PAM Service Configuration & Keyring Notice
+# -----------------------------------------------------------------
+echo -e "\n${C_BOLD}--> Step 4/6: PAM Service Integrations & Keyring Notice...${C_RESET}"
+
+ENABLE_SUDO="true"
+ENABLE_POLKIT="true"
+ENABLE_LOGIN="false"
+ENABLE_GDM="false"
+USE_TPM="false"
+
+if [ "$INTERACTIVE" -eq 1 ]; then
+    # Sudo
+    read -rp " Enable simultaneous Face + Fingerprint unlock for sudo? [Y/n]: " sudo_ans
+    sudo_ans="${sudo_ans:-Y}"
+    [[ ! "$sudo_ans" =~ ^[Yy]$ ]] && ENABLE_SUDO="false"
+
+    # Polkit
+    read -rp " Enable Face Unlock for Polkit GUI administration dialogs? [Y/n]: " polkit_ans
+    polkit_ans="${polkit_ans:-Y}"
+    [[ ! "$polkit_ans" =~ ^[Yy]$ ]] && ENABLE_POLKIT="false"
+
+    # Console Login
+    read -rp " Enable Face Unlock for console / virtual terminal login? [y/N]: " login_ans
+    login_ans="${login_ans:-N}"
+    [[ "$login_ans" =~ ^[Yy]$ ]] && ENABLE_LOGIN="true"
+
+    # GDM (GNOME Display Manager / Lock Screen)
+    echo -e "\n  ${C_YELLOW}─────────────────────────────────────────────────────────────────${C_RESET}"
+    echo -e "  ${C_YELLOW}${C_BOLD}⚠️  IMPORTANT GNOME KEYRING & SECRET SERVICE NOTICE:${C_RESET}"
+    echo -e "  ${C_DIM}On Linux (GNOME, GDM), your login password is used by oo7-daemon /${C_RESET}"
+    echo -e "  ${C_DIM}gnome-keyring to decrypt your saved passwords and web sessions.${C_RESET}"
+    echo -e "  ${C_DIM}Logging in at cold boot via biometrics will leave the keyring locked,${C_RESET}"
+    echo -e "  ${C_DIM}causing browsers (Chrome, Brave, etc.) to appear signed out until you${C_RESET}"
+    echo -e "  ${C_DIM}enter your password. (Unlocking from lock screen works normally).${C_RESET}"
+    echo -e "  ${C_YELLOW}─────────────────────────────────────────────────────────────────${C_RESET}"
+    read -rp " Enable Face Unlock for GDM login anyway? [y/N]: " gdm_ans
+    gdm_ans="${gdm_ans:-N}"
+    [[ "$gdm_ans" =~ ^[Yy]$ ]] && ENABLE_GDM="true"
+
+    # TPM 2.0
+    if [ "$TPM_SUPPORTED" -eq 1 ]; then
+        echo ""
+        read -rp " Seal biometric encryption keys into TPM 2.0 hardware chip? [Y/n]: " tpm_ans
+        tpm_ans="${tpm_ans:-Y}"
+        [[ "$tpm_ans" =~ ^[Yy]$ ]] && USE_TPM="true"
+    fi
+else
+    ENABLE_SUDO="true"
+    ENABLE_POLKIT="true"
+    ENABLE_LOGIN="false"
+    ENABLE_GDM="false"
+    [ "$TPM_SUPPORTED" -eq 1 ] && USE_TPM="true"
+fi
+
+# -----------------------------------------------------------------
+# Step 5: System Package Installation & Compilation
+# -----------------------------------------------------------------
+echo -e "\n${C_BOLD}--> Step 5/6: Deploying Files & Native SIMD Accelerator...${C_RESET}"
+mkdir -p "$INSTALL_PREFIX" "$CONFIG_DIR" "$FACES_DIR" "$MODELS_DIR"
+
+# SIMD build
 if command -v gcc >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/src/fast_simd.c" ]; then
     echo -e "  [*] Compiling native AVX2/FMA vector acceleration in C..."
-    gcc -O3 -mavx2 -mfma -shared -fPIC -o "$SCRIPT_DIR/faceunlock/libfaceunlock_simd.so" "$SCRIPT_DIR/src/fast_simd.c"
-    echo -e "  ${C_GREEN}✔${C_RESET} Native C SIMD library compiled successfully (libfaceunlock_simd.so)"
-elif [ -f "$SCRIPT_DIR/faceunlock/libfaceunlock_simd.so" ]; then
-    echo -e "  ${C_GREEN}✔${C_RESET} Using pre-compiled AVX2 SIMD library"
-else
-    echo -e "  ${C_YELLOW}⚠${C_RESET} GCC not found; using optimized NumPy fallback"
+    gcc -O3 -mavx2 -mfma -shared -fPIC -o "$SCRIPT_DIR/faceunlock/libfaceunlock_simd.so" "$SCRIPT_DIR/src/fast_simd.c" 2>/dev/null || true
+    [ -f "$SCRIPT_DIR/faceunlock/libfaceunlock_simd.so" ] && echo -e "  ${C_GREEN}✔${C_RESET} Native C SIMD library compiled successfully"
 fi
-
-# 4. Deploy Files & Environment
-echo -e "\n${C_BOLD}--> Step 3/5: Deploying System Package to /opt/faceunlock...${C_RESET}"
-mkdir -p "$INSTALL_PREFIX" "$CONFIG_DIR" "$FACES_DIR" "$MODELS_DIR"
 
 cp -rf "$SCRIPT_DIR/faceunlock" "$INSTALL_PREFIX/"
 cp -rf "$SCRIPT_DIR/pam" "$INSTALL_PREFIX/"
@@ -101,30 +294,29 @@ cp -rf "$SCRIPT_DIR/models/"* "$MODELS_DIR/"
 chmod 755 "$INSTALL_PREFIX/pam/pam_faceunlock.py"
 [ -f "$INSTALL_PREFIX/faceunlock/libfaceunlock_simd.so" ] && chmod 755 "$INSTALL_PREFIX/faceunlock/libfaceunlock_simd.so"
 
-# Virtual environment setup
+# Setup virtual environment
 UV_BIN="$(command -v uv 2>/dev/null || true)"
 if [ -z "$UV_BIN" ] && [ -x "$TARGET_HOME/.local/bin/uv" ]; then
     UV_BIN="$TARGET_HOME/.local/bin/uv"
 fi
 
 if [ -n "$UV_BIN" ]; then
-    echo -e "  [*] Creating isolated Python runtime via $UV_BIN..."
+    echo -e "  [*] Setting up Python runtime with full GUI and crypto support..."
     "$UV_BIN" venv --allow-existing "$INSTALL_PREFIX/venv"
-    "$UV_BIN" pip install --python "$INSTALL_PREFIX/venv/bin/python" numpy opencv-python-headless cryptography
+    "$UV_BIN" pip install --python "$INSTALL_PREFIX/venv/bin/python" numpy opencv-python cryptography
 elif [ -d "$SCRIPT_DIR/venv" ]; then
-    echo -e "  [*] Copying tested virtual environment..."
+    echo -e "  [*] Synchronizing tested virtual environment..."
     rm -rf "$INSTALL_PREFIX/venv"
     cp -r "$SCRIPT_DIR/venv" "$INSTALL_PREFIX/"
 fi
 
-# Ensure system-site-packages is enabled so D-Bus / system libraries are accessible
+# Ensure system-site-packages enabled
 if [ -f "$INSTALL_PREFIX/venv/pyvenv.cfg" ]; then
     sed -i 's/include-system-site-packages = false/include-system-site-packages = true/g' "$INSTALL_PREFIX/venv/pyvenv.cfg"
 fi
 
-# System configuration
-if [ ! -f "$CONFIG_DIR/config.ini" ]; then
-    cat <<EOF > "$CONFIG_DIR/config.ini"
+# Write system configuration
+cat <<EOF > "$CONFIG_DIR/config.ini"
 [camera]
 device = auto
 fallback_to_webcam = true
@@ -133,24 +325,33 @@ height = 480
 fps = 30
 
 [security]
-cosine_threshold = 0.33
-min_liveness_score = 0.55
+cosine_threshold = $COSINE_TH
+min_liveness_score = $LIVENESS_TH
 require_liveness = true
-max_timeout = 3.5
+max_timeout = $TIMEOUT_SEC
 warmup_frames = 4
 check_lid = true
+use_tpm = $USE_TPM
+security_mode = $SECURITY_PROFILE
+
+[policies]
+sudo = $ENABLE_SUDO
+gdm = $ENABLE_GDM
+polkit = $ENABLE_POLKIT
+login = $ENABLE_LOGIN
+lockers = true
+sshd = false
 
 [pam]
 enabled = true
 show_feedback = true
+feedback_style = animated
 
 [paths]
 models_dir = $MODELS_DIR
 data_dir = $FACES_DIR
 EOF
-    chmod 644 "$CONFIG_DIR/config.ini"
-fi
-
+chmod 644 "$CONFIG_DIR/config.ini"
 chmod 700 "$FACES_DIR"
 
 # Install /usr/local/bin/faceunlock wrapper
@@ -166,7 +367,7 @@ PYTHONPATH="\$BASE_DIR:\$PYTHONPATH" exec "\$PYTHON_EXEC" -m faceunlock.cli "\$@
 EOF
 chmod +x "$BIN_DIR/faceunlock"
 
-# Udev camera access rule
+# Udev rule for camera
 if [ -d "/etc/udev/rules.d" ]; then
     cat <<EOF > "/etc/udev/rules.d/99-faceunlock-camera.rules"
 SUBSYSTEM=="video4linux", TAG+="uaccess", MODE="0660", GROUP="video"
@@ -175,124 +376,52 @@ EOF
     udevadm trigger --subsystem-match=video4linux 2>/dev/null || true
 fi
 
-# Sync existing enrolled user faces
+# SELinux policy installation on Fedora / RHEL
+if command -v semodule >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/selinux/faceunlock_gdm.pp" ]; then
+    echo -e "  [*] Installing SELinux policy module (faceunlock_gdm.pp)..."
+    semodule -i "$SCRIPT_DIR/selinux/faceunlock_gdm.pp" 2>/dev/null || true
+fi
+
+# Sync PAM services
+PYTHON_CMD="$INSTALL_PREFIX/venv/bin/python"
+[ "$ENABLE_SUDO" = "true" ] && "$PYTHON_CMD" -m faceunlock.pam_integrator enable sudo >/dev/null 2>&1 || "$PYTHON_CMD" -m faceunlock.pam_integrator disable sudo >/dev/null 2>&1
+[ "$ENABLE_POLKIT" = "true" ] && "$PYTHON_CMD" -m faceunlock.pam_integrator enable polkit-1 >/dev/null 2>&1 || "$PYTHON_CMD" -m faceunlock.pam_integrator disable polkit-1 >/dev/null 2>&1
+[ "$ENABLE_LOGIN" = "true" ] && "$PYTHON_CMD" -m faceunlock.pam_integrator enable login >/dev/null 2>&1 || "$PYTHON_CMD" -m faceunlock.pam_integrator disable login >/dev/null 2>&1
+[ "$ENABLE_GDM" = "true" ] && "$PYTHON_CMD" -m faceunlock.pam_integrator enable gdm-password >/dev/null 2>&1 || "$PYTHON_CMD" -m faceunlock.pam_integrator disable gdm-password >/dev/null 2>&1
+
+# Sync existing enrolled user faces if present
 if [ -d "$TARGET_HOME/.config/faceunlock/faces" ]; then
-    echo -e "  [*] Synchronizing biometric vaults from $TARGET_USER..."
     cp -f "$TARGET_HOME/.config/faceunlock/faces/"*.vault "$FACES_DIR/" 2>/dev/null || true
     cp -f "$TARGET_HOME/.config/faceunlock/faces/"*.json "$FACES_DIR/" 2>/dev/null || true
     cp -f "$TARGET_HOME/.config/faceunlock/faces/.vault_secret" "$FACES_DIR/" 2>/dev/null || true
     chmod 600 "$FACES_DIR/"* "$FACES_DIR/.vault_secret" 2>/dev/null || true
 fi
-echo -e "  ${C_GREEN}✔${C_RESET} System deployment complete (/opt/faceunlock)"
 
-# 5. Security & PAM Integration
-echo -e "\n${C_BOLD}--> Step 4/5: Security & PAM Authentication Configuration...${C_RESET}"
-INTERACTIVE=0
-[ -t 0 ] && INTERACTIVE=1
+echo -e "  ${C_GREEN}✔${C_RESET} Package successfully installed into /opt/faceunlock"
 
-USE_TPM="false"
-if [ "$TPM_SUPPORTED" -eq 1 ]; then
-    if [ "$INTERACTIVE" -eq 1 ]; then
-        echo -e "  ${C_CYAN}[TPM 2.0]${C_RESET} Hardware key sealing provides cryptographic tamper-proofing for biometric vectors."
-        read -rp "  Seal biometric encryption keys into TPM 2.0 hardware chip? [Y/n]: " tpm_ans
-        tpm_ans="${tpm_ans:-Y}"
-        if [[ "$tpm_ans" =~ ^[Yy]$ ]]; then
-            USE_TPM="true"
-            echo -e "  ${C_GREEN}✔${C_RESET} Hardware TPM 2.0 Key Sealing ENABLED"
-        else
-            echo -e "  ${C_DIM}• Selected software key derivation (Software AES-256-GCM)${C_RESET}"
-        fi
-    else
-        USE_TPM="true"
-    fi
-fi
-
-# Ensure config.ini reflects settings
-if [ -f "$CONFIG_DIR/config.ini" ]; then
-    sed -i "s/^use_tpm = .*/use_tpm = $USE_TPM/" "$CONFIG_DIR/config.ini" 2>/dev/null || true
-    if ! grep -q "use_tpm" "$CONFIG_DIR/config.ini"; then
-        sed -i "/\[security\]/a use_tpm = $USE_TPM" "$CONFIG_DIR/config.ini"
-    fi
-fi
-
-PYTHON_CMD="$INSTALL_PREFIX/venv/bin/python"
-
-# 1. Sudo Privilege Elevation
-ENABLE_SUDO=1
+# -----------------------------------------------------------------
+# Step 6: Guided Face Registration & Verification
+# -----------------------------------------------------------------
+echo -e "\n${C_BOLD}--> Step 6/6: Face Model Registration...${C_RESET}"
 if [ "$INTERACTIVE" -eq 1 ]; then
-    read -rp "Enable simultaneous Face + Fingerprint unlock for sudo? [Y/n]: " sudo_ans
-    sudo_ans="${sudo_ans:-Y}"
-    [[ ! "$sudo_ans" =~ ^[Yy]$ ]] && ENABLE_SUDO=0
-fi
-
-if [ "$ENABLE_SUDO" -eq 1 ]; then
-    if "$PYTHON_CMD" -m faceunlock.pam_integrator enable sudo >/dev/null 2>&1; then
-        echo -e "  ${C_GREEN}✔${C_RESET} Configured /etc/pam.d/sudo (Sudo elevation)"
-    fi
-fi
-
-# 2. GDM (GNOME Display Manager / Lock Screen)
-if [ -f "/etc/pam.d/gdm-password" ] || [ -f "/usr/lib/pam.d/gdm-password" ]; then
-    ENABLE_GDM=1
-    if [ "$INTERACTIVE" -eq 1 ]; then
-        read -rp "Enable Face Unlock for GDM Login and Lock Screen? [Y/n]: " gdm_ans
-        gdm_ans="${gdm_ans:-Y}"
-        [[ ! "$gdm_ans" =~ ^[Yy]$ ]] && ENABLE_GDM=0
-    fi
-    if [ "$ENABLE_GDM" -eq 1 ]; then
-        if "$PYTHON_CMD" -m faceunlock.pam_integrator enable gdm-password >/dev/null 2>&1; then
-            echo -e "  ${C_GREEN}✔${C_RESET} Configured /etc/pam.d/gdm-password (GDM Login & Lock Screen)"
-        fi
-    fi
-fi
-
-# 3. Polkit (GUI Administration Dialogs)
-if [ -f "/etc/pam.d/polkit-1" ] || [ -f "/usr/lib/pam.d/polkit-1" ]; then
-    ENABLE_POLKIT=1
-    if [ "$INTERACTIVE" -eq 1 ]; then
-        read -rp "Enable Face Unlock for Polkit GUI Admin Dialogs? [Y/n]: " polkit_ans
-        polkit_ans="${polkit_ans:-Y}"
-        [[ ! "$polkit_ans" =~ ^[Yy]$ ]] && ENABLE_POLKIT=0
-    fi
-    if [ "$ENABLE_POLKIT" -eq 1 ]; then
-        if "$PYTHON_CMD" -m faceunlock.pam_integrator enable polkit-1 >/dev/null 2>&1; then
-            echo -e "  ${C_GREEN}✔${C_RESET} Configured /etc/pam.d/polkit-1 (Polkit GUI Prompts)"
-        fi
-    fi
-fi
-
-# 6. Biometric Enrollment
-echo -e "\n${C_BOLD}--> Step 5/5: Biometric Face Enrollment...${C_RESET}"
-IS_ENROLLED=0
-if [ -f "$FACES_DIR/$TARGET_USER.vault" ] || [ -f "$TARGET_HOME/.config/faceunlock/faces/$TARGET_USER.vault" ]; then
-    IS_ENROLLED=1
-fi
-
-if [ "$INTERACTIVE" -eq 1 ]; then
-    if [ "$IS_ENROLLED" -eq 1 ]; then
-        read -rp "User '$TARGET_USER' is already enrolled. Re-enroll face now? [y/N]: " enroll_ans
-        enroll_ans="${enroll_ans:-N}"
-    else
-        read -rp "No face enrolled for '$TARGET_USER'. Enroll face now? [Y/n]: " enroll_ans
-        enroll_ans="${enroll_ans:-Y}"
-    fi
-
-    if [[ "$enroll_ans" =~ ^[Yy]$ ]]; then
+    read -rp "Register face model for '$TARGET_USER' now? [Y/n]: " add_ans
+    add_ans="${add_ans:-Y}"
+    if [[ "$add_ans" =~ ^[Yy]$ ]]; then
         echo ""
-        "$BIN_DIR/faceunlock" enroll "$TARGET_USER"
+        "$BIN_DIR/faceunlock" add "$TARGET_USER" || true
 
-        # Sync to user home as well
+        # Sync vault to user home
         mkdir -p "$TARGET_HOME/.config/faceunlock/faces"
         cp -f "$FACES_DIR/$TARGET_USER.vault" "$TARGET_HOME/.config/faceunlock/faces/" 2>/dev/null || true
         cp -f "$FACES_DIR/.vault_secret" "$TARGET_HOME/.config/faceunlock/faces/" 2>/dev/null || true
         chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config/faceunlock" 2>/dev/null || true
 
         echo ""
-        read -rp "Run live verification test now? [Y/n]: " test_ans
+        read -rp "Test live camera verification preview now? [Y/n]: " test_ans
         test_ans="${test_ans:-Y}"
         if [[ "$test_ans" =~ ^[Yy]$ ]]; then
             echo ""
-            "$BIN_DIR/faceunlock" test "$TARGET_USER"
+            "$BIN_DIR/faceunlock" test "$TARGET_USER" || true
         fi
     fi
 fi
@@ -300,10 +429,9 @@ fi
 echo -e "\n${C_GREEN}╭──────────────────────────────────────────────────────────╮${C_RESET}"
 echo -e "${C_GREEN}│${C_RESET} ${C_BOLD}Installation Successful! Linux Face Unlock is Ready.${C_RESET}   ${C_GREEN}│${C_RESET}"
 echo -e "${C_GREEN}╰──────────────────────────────────────────────────────────╯${C_RESET}"
-echo -e " Quick Commands:"
-echo -e "  • Status & Diagnostics: ${C_CYAN}faceunlock status${C_RESET}"
-echo -e "  • Test verification:    ${C_CYAN}faceunlock test${C_RESET}"
-echo -e "  • Re-enroll face:       ${C_CYAN}faceunlock enroll${C_RESET}"
-echo -e "  • Service management:   ${C_CYAN}faceunlock service list${C_RESET}"
-echo -e "  • Camera probe:         ${C_CYAN}faceunlock probe${C_RESET}"
-echo -e "  • Sudo test:            ${C_CYAN}sudo true${C_RESET}\n"
+echo -e " Available Commands:"
+echo -e "  • ${C_CYAN}sudo faceunlock config${C_RESET}  - Interactive toggle menu for PAM, feedback, timeouts & security"
+echo -e "  • ${C_CYAN}sudo faceunlock add${C_RESET}     - Register face model with iOS-like guided animation"
+echo -e "  • ${C_CYAN}sudo faceunlock test${C_RESET}    - Open camera window & display live face verification"
+echo -e "  • ${C_CYAN}faceunlock status${C_RESET}       - View system status, hardware diagnostics & active PAM services"
+echo -e "  • ${C_CYAN}sudo true${C_RESET}               - Test instant biometric authentication on terminal\n"

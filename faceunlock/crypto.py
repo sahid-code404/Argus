@@ -181,6 +181,7 @@ class BiometricVault:
         vault_path: Path,
         camera_type: str = "rgb_webcam",
         model: str = "sface_2021dec",
+        model_name: str = "#1 Default",
         use_tpm: bool = False,
     ) -> bool:
         """Encrypt and save biometric embeddings with AES-256-GCM."""
@@ -212,6 +213,7 @@ class BiometricVault:
             "version": VAULT_VERSION,
             "user": user,
             "model": model,
+            "model_name": model_name,
             "camera_type": camera_type,
             "count": len(embeddings),
             "dim": 128,

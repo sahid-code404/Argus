@@ -15,6 +15,12 @@ import sys
 import time
 from pathlib import Path
 from typing import List, Optional
+import shutil
+
+# Ensure base directory is in sys.path even when re-exec'd via sudo without PYTHONPATH
+_BASE_DIR = str(Path(__file__).resolve().parent.parent)
+if _BASE_DIR not in sys.path:
+    sys.path.insert(0, _BASE_DIR)
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 import cv2
@@ -40,10 +46,11 @@ def enforce_sudo_privilege(command_name: str) -> None:
     # If running interactively, re-exec via sudo
     if sys.stdin.isatty():
         try:
-            if sys.argv[0].endswith("faceunlock"):
-                cmd = ["sudo", sys.argv[0]] + sys.argv[1:]
+            faceunlock_bin = shutil.which("faceunlock") or "/usr/local/bin/faceunlock"
+            if os.path.exists(faceunlock_bin) and os.access(faceunlock_bin, os.X_OK):
+                cmd = ["sudo", faceunlock_bin] + sys.argv[1:]
             else:
-                cmd = ["sudo", sys.executable] + sys.argv
+                cmd = ["sudo", "env", f"PYTHONPATH={_BASE_DIR}", sys.executable, "-m", "faceunlock.cli"] + sys.argv[1:]
             os.execvp("sudo", cmd)
         except Exception as e:
             sys.stderr.write(f"\033[91m[!] Privilege Error: Failed to run with sudo: {e}\033[0m\n")
@@ -200,24 +207,8 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
         cap.release()
 
 
-def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
-    """Test live face verification with interactive feedback."""
-    enforce_sudo_privilege("test")
-    user = args.user or os.environ.get("SUDO_USER") or os.environ.get("USER") or "user"
-
-    render_banner("BIOMETRIC VERIFICATION TEST", f"Testing authentication for '{user}'")
-
-    engine = FaceEngine(
-        model_dir=cfg.models_dir or None,
-        data_dir=cfg.data_dir or None,
-        cosine_threshold=cfg.cosine_threshold,
-        min_liveness_threshold=cfg.min_liveness_score,
-    )
-
-    if not engine.is_enrolled(user):
-        print(f"\033[91m[!] User '{user}' is not enrolled.\033[0m Run 'faceunlock enroll {user}' first.\n")
-        return 1
-
+def _terminal_test(user: str, engine: FaceEngine, cfg: FaceUnlockConfig) -> int:
+    """Run console-based live face verification with terminal spinner."""
     selected_cam, reason = select_camera(None if cfg.camera_device == "auto" else cfg.camera_device)
     print(f"Active Camera: \033[1;36m{selected_cam.path}\033[0m ({selected_cam.type_label})")
     print(f"Strategy:      {reason}")
@@ -293,6 +284,86 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
             return 1
     finally:
         cap.release()
+
+
+def cmd_add(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
+    """Register a new face model with iOS-inspired circular reticle animation."""
+    enforce_sudo_privilege("add")
+    user = getattr(args, "user", None) or os.environ.get("SUDO_USER") or os.environ.get("USER") or "user"
+
+    print("=" * 65)
+    print("             BIOMETRIC FACE MODEL REGISTRATION")
+    print("=" * 65)
+    print(f"Adding face model for the current user ({user})")
+
+    default_name = "#1 Default"
+    try:
+        raw_name = input(f"Enter face model (model index number eg #1) name (max 24 characters) [{default_name}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\n\033[1;31m✗ Face enrollment failed or cancelled. Try again.\033[0m\n")
+        return 1
+
+    model_name = raw_name if raw_name else default_name
+    if len(model_name) > 24:
+        model_name = model_name[:24]
+        print(f"Notice: Model name truncated to 24 characters: '{model_name}'")
+
+    engine = FaceEngine(
+        model_dir=cfg.models_dir or None,
+        data_dir=cfg.data_dir or None,
+        use_tpm=cfg.use_tpm,
+    )
+
+    has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    if not has_display:
+        print("\033[93m[!] No graphical display detected. Falling back to terminal enrollment wizard...\033[0m\n")
+        return cmd_enroll(args, cfg)
+
+    try:
+        from faceunlock.gui_enroll import run_gui_enrollment
+        print(f"\nOpening webcam preview window... Please follow the guided head animations.")
+        success = run_gui_enrollment(user=user, model_name=model_name, engine=engine, config=cfg)
+        if success:
+            print(f"\n\033[1;32m✔ Face model '{model_name}' successfully enrolled and encrypted for user '{user}'.\033[0m\n")
+            return 0
+        else:
+            print(f"\n\033[1;31m✗ Face enrollment failed or cancelled. Try again.\033[0m\n")
+            return 1
+    except Exception as e:
+        sys.stderr.write(f"\033[91m[!] Graphical enrollment error: {e}\033[0m\n")
+        print("Falling back to terminal enrollment wizard...\n")
+        return cmd_enroll(args, cfg)
+
+
+def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
+    """Test live face verification with camera preview window or terminal fallback."""
+    enforce_sudo_privilege("test")
+    user = getattr(args, "user", None) or os.environ.get("SUDO_USER") or os.environ.get("USER") or "user"
+
+    render_banner("BIOMETRIC VERIFICATION TEST", f"Testing authentication for '{user}'")
+
+    engine = FaceEngine(
+        model_dir=cfg.models_dir or None,
+        data_dir=cfg.data_dir or None,
+        cosine_threshold=cfg.cosine_threshold,
+        min_liveness_threshold=cfg.min_liveness_score,
+        use_tpm=cfg.use_tpm,
+    )
+
+    if not engine.is_enrolled(user):
+        print(f"\033[91m[!] User '{user}' is not enrolled.\033[0m Run 'sudo faceunlock add {user}' first.\n")
+        return 1
+
+    has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    if has_display:
+        try:
+            from faceunlock.gui_test import run_gui_test
+            run_gui_test(user=user, engine=engine, config=cfg)
+            return 0
+        except Exception as e:
+            print(f"\033[93m[!] Graphical preview encountered an issue ({e}). Falling back to terminal...\033[0m\n")
+
+    return _terminal_test(user, engine, cfg)
 
 
 def cmd_remove(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
@@ -466,6 +537,182 @@ def cmd_service(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     return 0
 
 
+def _interactive_config_menu(cfg: FaceUnlockConfig) -> int:
+    """Terminal interactive menu to view and toggle options."""
+    enforce_sudo_privilege("config")
+    from faceunlock.pam_integrator import PamIntegrator
+    from faceunlock.tpm import TPMManager
+
+    integrator = PamIntegrator()
+    tpm_supported = TPMManager.is_hardware_present()
+
+    while True:
+        pam_status = integrator.get_status_overview()
+
+        print("\n" + "=" * 65)
+        print("          LINUX FACE UNLOCK - INTERACTIVE CONFIGURATION")
+        print("=" * 65)
+
+        def _fmt_state(val: bool) -> str:
+            return "\033[92m[ENABLED]\033[0m" if val else "\033[90m[DISABLED]\033[0m"
+
+        sudo_en = cfg.policy_sudo and pam_status.get("sudo", {}).get("enabled", False)
+        polkit_en = cfg.policy_polkit and pam_status.get("polkit-1", {}).get("enabled", False)
+        gdm_en = cfg.policy_gdm and pam_status.get("gdm-password", {}).get("enabled", False)
+        login_en = cfg.policy_login and pam_status.get("login", {}).get("enabled", False)
+        ssh_en = cfg.policy_sshd and pam_status.get("sshd", {}).get("enabled", False)
+
+        tpm_state_str = (_fmt_state(cfg.use_tpm) if tpm_supported else "\033[90m[NOT SUPPORTED]\033[0m")
+        feedback_str = _fmt_state(cfg.show_feedback)
+
+        print(" [PAM Services Integration]")
+        print(f"  1. Sudo Privilege Elevation:       {_fmt_state(sudo_en)}")
+        print(f"  2. Polkit GUI Dialogs:             {_fmt_state(polkit_en)}")
+        print(f"  3. GDM Login & Lock Screen:        {_fmt_state(gdm_en)} \033[93m⚠️ (Keyring notice)\033[0m")
+        print(f"  4. Console / Terminal Login:       {_fmt_state(login_en)}")
+        print(f"  5. Screen Lockers:                 {_fmt_state(cfg.policy_lockers)}")
+        print(f"  6. SSH Remote Login:               {_fmt_state(ssh_en)}")
+        print()
+        print(" [Authentication & Terminal Feedback]")
+        print(f"  7. Terminal Scanning Feedback:     {feedback_str}")
+        print(f"  8. Feedback Display Mode:          \033[1m{cfg.feedback_style.upper()}\033[0m (animated / clean / quiet)")
+        print(f"  9. Recognition Timeout:            \033[1m{cfg.max_timeout:.1f}s\033[0m")
+        print()
+        print(" [Security Profile & Hardware]")
+        print(f" 10. Security Mode:                  \033[1m{cfg.security_mode.upper()}\033[0m (Threshold: {cfg.cosine_threshold:.2f}, Liveness: {cfg.min_liveness_score:.2f})")
+        print(f" 11. Hardware TPM 2.0 Key Sealing:   {tpm_state_str}")
+        print("-" * 65)
+        print(" Commands: [1-11] Toggle/Modify | [S] Save & Apply | [Q] Quit without saving")
+        print("=" * 65)
+
+        try:
+            choice = input("Select an option [1-11, S, Q]: ").strip().upper()
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return 0
+
+        if choice == "1":
+            cfg.policy_sudo = not cfg.policy_sudo
+            print(f"Sudo set to: {'ENABLED' if cfg.policy_sudo else 'DISABLED'}")
+        elif choice == "2":
+            cfg.policy_polkit = not cfg.policy_polkit
+            print(f"Polkit set to: {'ENABLED' if cfg.policy_polkit else 'DISABLED'}")
+        elif choice == "3":
+            if not cfg.policy_gdm:
+                print("\n\033[93m" + "!" * 65)
+                print(" ⚠️  CRITICAL GNOME KEYRING & SECRET SERVICE NOTICE:")
+                print(" Logging in at cold boot using biometrics cannot unlock your")
+                print(" GNOME Keyring / oo7-daemon because your plaintext password is not")
+                print(" present. Saved browser logins (Chrome, Brave, etc.) will stay")
+                print(" locked until you provide your password.")
+                print(" Unlocking from lock screen after login is NOT affected.")
+                print("!" * 65 + "\033[0m")
+                confirm = input("Enable Face Unlock for GDM anyway? [y/N]: ").strip().lower()
+                if confirm in ("y", "yes"):
+                    cfg.policy_gdm = True
+            else:
+                cfg.policy_gdm = False
+            print(f"GDM set to: {'ENABLED' if cfg.policy_gdm else 'DISABLED'}")
+        elif choice == "4":
+            cfg.policy_login = not cfg.policy_login
+            print(f"Login set to: {'ENABLED' if cfg.policy_login else 'DISABLED'}")
+        elif choice == "5":
+            cfg.policy_lockers = not cfg.policy_lockers
+            print(f"Lockers set to: {'ENABLED' if cfg.policy_lockers else 'DISABLED'}")
+        elif choice == "6":
+            if not cfg.policy_sshd:
+                print("\nNotice: Enabling Face Unlock for SSH will attempt camera access on the local host machine during remote logins.")
+                confirm = input("Enable Face Unlock for SSH? [y/N]: ").strip().lower()
+                if confirm in ("y", "yes"):
+                    cfg.policy_sshd = True
+            else:
+                cfg.policy_sshd = False
+            print(f"SSH set to: {'ENABLED' if cfg.policy_sshd else 'DISABLED'}")
+        elif choice == "7":
+            cfg.show_feedback = not cfg.show_feedback
+            print(f"Terminal feedback: {'ENABLED' if cfg.show_feedback else 'DISABLED'}")
+        elif choice == "8":
+            cycle = {"animated": "clean", "clean": "quiet", "quiet": "animated"}
+            cfg.feedback_style = cycle.get(cfg.feedback_style.lower(), "animated")
+            print(f"Feedback style set to: {cfg.feedback_style.upper()}")
+        elif choice == "9":
+            try:
+                raw_t = input(f"Enter new timeout in seconds (1.0 - 10.0) [{cfg.max_timeout}]: ").strip()
+                if raw_t:
+                    t = float(raw_t)
+                    if 1.0 <= t <= 10.0:
+                        cfg.max_timeout = t
+                        print(f"Timeout set to {cfg.max_timeout}s")
+                    else:
+                        print("Value must be between 1.0 and 10.0")
+            except ValueError:
+                print("Invalid number.")
+        elif choice == "10":
+            print("\nSecurity Profiles:")
+            print("  [L] Low / Convenient   (Threshold: 0.30, Liveness: 0.45, Timeout: 2.5s)")
+            print("  [M] Medium / Balanced  (Threshold: 0.33, Liveness: 0.55, Timeout: 3.5s)")
+            print("  [H] High / Strict      (Threshold: 0.40, Liveness: 0.65, Timeout: 4.0s)")
+            print("  [C] Custom Tweaks")
+            sub = input("Select profile [L/M/H/C]: ").strip().upper()
+            if sub == "L":
+                cfg.apply_security_mode("convenient")
+            elif sub == "M":
+                cfg.apply_security_mode("balanced")
+            elif sub == "H":
+                cfg.apply_security_mode("strict")
+            elif sub == "C":
+                try:
+                    c_th = float(input(f"Enter Cosine Match Threshold (0.25 - 0.50) [{cfg.cosine_threshold}]: ").strip() or cfg.cosine_threshold)
+                    l_th = float(input(f"Enter Min Liveness Score (0.30 - 0.90) [{cfg.min_liveness_score}]: ").strip() or cfg.min_liveness_score)
+                    cfg.cosine_threshold = c_th
+                    cfg.min_liveness_score = l_th
+                    cfg.security_mode = "custom"
+                except ValueError:
+                    print("Invalid numeric values.")
+            print(f"Security mode set to: {cfg.security_mode.upper()}")
+        elif choice == "11":
+            if tpm_supported:
+                cfg.use_tpm = not cfg.use_tpm
+                print(f"TPM 2.0 sealing set to: {'ENABLED' if cfg.use_tpm else 'DISABLED'}")
+            else:
+                print("TPM 2.0 hardware chip not found on this system.")
+        elif choice == "S":
+            # Apply PAM changes
+            if cfg.policy_sudo:
+                integrator.enable_service("sudo")
+            else:
+                integrator.disable_service("sudo")
+
+            if cfg.policy_polkit:
+                integrator.enable_service("polkit-1")
+            else:
+                integrator.disable_service("polkit-1")
+
+            if cfg.policy_gdm:
+                integrator.enable_service("gdm-password")
+            else:
+                integrator.disable_service("gdm-password")
+
+            if cfg.policy_login:
+                integrator.enable_service("login")
+            else:
+                integrator.disable_service("login")
+
+            if cfg.policy_sshd and integrator.is_service_available("sshd"):
+                integrator.enable_service("sshd")
+            elif integrator.is_service_available("sshd"):
+                integrator.disable_service("sshd")
+
+            saved_path = cfg.save()
+            print(f"\n\033[1;32m✔ Configuration saved to {saved_path} and PAM services successfully synced!\033[0m")
+            return 0
+        elif choice == "Q":
+            print("\nExited without saving.")
+            return 0
+        else:
+            print(f"Invalid option: '{choice}'")
+
+
 def cmd_config(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     """View or edit configuration."""
     if args.action == "set":
@@ -491,12 +738,33 @@ def cmd_config(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
             cfg.use_tpm = val.lower() in ("true", "1", "yes")
         elif key in ("security_mode", "security.security_mode"):
             cfg.apply_security_mode(val)
+        elif key in ("feedback_style", "pam.feedback_style"):
+            cfg.feedback_style = val.lower()
+        elif key in ("show_feedback", "pam.show_feedback"):
+            cfg.show_feedback = val.lower() in ("true", "1", "yes")
+        elif key in ("ssh", "sshd", "policies.sshd"):
+            cfg.policy_sshd = val.lower() in ("true", "1", "yes")
         else:
             print(f"Unknown configuration key: {key}")
             return 1
         saved_path = cfg.save()
         print(f"\033[92m[✓] Updated {key} = {val} in {saved_path}\033[0m")
         return 0
+
+    if sys.stdin.isatty() and (not args.action or args.action == "show"):
+        return _interactive_config_menu(cfg)
+
+    # Non-interactive summary
+    print("=" * 65)
+    print(" Linux Face Unlock Configuration Summary")
+    print("=" * 65)
+    print(f" Camera Device:        {cfg.camera_device}")
+    print(f" Security Mode:        {cfg.security_mode.upper()} (threshold: {cfg.cosine_threshold:.2f}, liveness: {cfg.min_liveness_score:.2f})")
+    print(f" Max Timeout:          {cfg.max_timeout:.1f}s")
+    print(f" TPM 2.0 Sealing:      {'Active' if cfg.use_tpm else 'Disabled'}")
+    print(f" Terminal Feedback:    {'Enabled' if cfg.show_feedback else 'Disabled'} ({cfg.feedback_style})")
+    print(f" Policies: Sudo={cfg.policy_sudo}, Polkit={cfg.policy_polkit}, GDM={cfg.policy_gdm}, Login={cfg.policy_login}, SSH={cfg.policy_sshd}")
+    print("=" * 65)
     return 0
 
 
@@ -514,8 +782,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     # list
     subparsers.add_parser("list", help="List enrolled users")
 
+    # add
+    p_add = subparsers.add_parser("add", help="Register a new face model with iOS-like guided animation")
+    p_add.add_argument("user", nargs="?", help="Username (defaults to current user)")
+
     # enroll
-    p_enroll = subparsers.add_parser("enroll", help="Enroll a user's face")
+    p_enroll = subparsers.add_parser("enroll", help="Enroll a user's face (alias for add)")
     p_enroll.add_argument("user", nargs="?", help="Username (defaults to current user)")
     p_enroll.add_argument("-s", "--samples", type=int, default=5, help="Number of face samples (default: 5)")
 
@@ -566,8 +838,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_service(args, cfg)
     elif args.command == "list":
         return cmd_list(args, cfg)
-    elif args.command == "enroll":
-        return cmd_enroll(args, cfg)
+    elif args.command in ("add", "enroll"):
+        return cmd_add(args, cfg)
     elif args.command == "test":
         return cmd_test(args, cfg)
     elif args.command == "remove":

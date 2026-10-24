@@ -29,3 +29,22 @@ def test_config_save_and_load(tmp_path):
     assert loaded.cosine_threshold == 0.45
     assert loaded.max_timeout == 5.0
     assert loaded.pam_enabled is True
+
+
+def test_config_security_modes_and_policies(tmp_path):
+    cfg_file = tmp_path / "custom_config.ini"
+    cfg = FaceUnlockConfig()
+    cfg.apply_security_mode("strict")
+    assert cfg.cosine_threshold == 0.40
+    assert cfg.min_liveness_score == 0.65
+    assert cfg.max_timeout == 4.0
+
+    cfg.policy_sshd = True
+    cfg.feedback_style = "quiet"
+    cfg.save(str(cfg_file))
+
+    loaded = FaceUnlockConfig.load(str(cfg_file))
+    assert loaded.security_mode == "strict"
+    assert loaded.policy_sshd is True
+    assert loaded.feedback_style == "quiet"
+    assert loaded.is_service_enabled("sshd") is True
