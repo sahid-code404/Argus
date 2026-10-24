@@ -26,8 +26,8 @@ class FaceUnlockConfig:
     fps: int = 30
 
     # Security settings
-    cosine_threshold: float = 0.363
-    min_liveness_score: float = 0.55
+    cosine_threshold: float = 0.40
+    min_liveness_score: float = 0.60
     require_liveness: bool = True
     max_timeout: float = 3.5
     warmup_frames: int = 4

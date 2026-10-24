@@ -92,7 +92,11 @@ class FaceEngine:
 
         self._detector: Optional[cv2.FaceDetectorYN] = None
         self._recognizer: Optional[cv2.FaceRecognizerSF] = None
-        self.liveness_detector = LivenessDetector(min_liveness_threshold=min_liveness_threshold)
+        minifasnet_path = self.model_dir / "face_antispoof_minifasnet.onnx"
+        self.liveness_detector = LivenessDetector(
+            model_path=str(minifasnet_path) if minifasnet_path.exists() else None,
+            min_liveness_threshold=min_liveness_threshold,
+        )
         self._last_input_size = (320, 320)
 
         self._init_models()

@@ -220,6 +220,8 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     passed = False
     best_similarity = 0.0
     best_liveness: Optional[LivenessResult] = None
+    consecutive_matches = 0
+    min_required_matches = 1 if is_ir else 4
 
     try:
         while time.monotonic() - start_time < cfg.max_timeout:
@@ -238,14 +240,20 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
                 best_similarity = result.confidence
                 best_liveness = result.liveness
 
-            status_icon = "🟢" if result.matched else ("🟡" if result.face_detected else "⚪")
+            if result.matched and result.liveness.is_live:
+                consecutive_matches += 1
+            else:
+                consecutive_matches = 0
+
+            status_icon = "🟢" if consecutive_matches >= min_required_matches else ("🟡" if result.face_detected else "⚪")
             sys.stdout.write(
-                f"\r{status_icon} Cosine Sim: {result.confidence:.3f} (thresh={result.threshold:.3f}) | "
-                f"Liveness: {result.liveness.verdict} ({result.liveness.confidence:.2f})   "
+                f"\r{status_icon} Match: {result.confidence:.3f}/{result.threshold:.3f} | "
+                f"PAD: {result.liveness.verdict} ({result.liveness.confidence:.2f}) | "
+                f"ValidFrames: {consecutive_matches}/{min_required_matches}   "
             )
             sys.stdout.flush()
 
-            if result.matched:
+            if consecutive_matches >= min_required_matches:
                 passed = True
                 break
             time.sleep(0.02)
@@ -255,14 +263,25 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
             print(f"\033[92m[✓] VERIFICATION PASSED!\033[0m")
             print(f"  Similarity: {best_similarity:.3f} >= {cfg.cosine_threshold:.3f}")
             if best_liveness:
-                print(f"  Liveness:   {best_liveness.verdict} (score={best_liveness.confidence:.2f})")
-                print(f"  Anti-Spoof: Organic micro-texture: {best_liveness.texture_score:.2f}, Motion: {best_liveness.motion_score:.2f}")
+                print(f"  Liveness:   {best_liveness.verdict} (Score: {best_liveness.confidence:.2f})")
+                print(f"  Anti-Spoof: Neural PAD: {best_liveness.neural_score:.2f}, "
+                      f"3D Parallax: {best_liveness.motion_score:.2f}, "
+                      f"Bezel Reject: {best_liveness.bezel_score:.2f}")
             print(f"  Sensor:     {selected_cam.type_label} ({selected_cam.path})")
             return 0
         else:
-            print(f"\033[91m[✗] VERIFICATION FAILED / TIMED OUT\033[0m")
+            print(f"\033[91m[✗] VERIFICATION REJECTED / TIMED OUT\033[0m")
             print(f"  Highest Similarity: {best_similarity:.3f} (Required: {cfg.cosine_threshold:.3f})")
             if best_liveness:
+                print(f"  Liveness Verdict:   {best_liveness.verdict} (Score: {best_liveness.confidence:.2f})")
+                details = best_liveness.details
+                if "neural" in details and "logit_diff" in details["neural"]:
+                    print(f"  Neural Logit Diff:  {details['neural']['logit_diff']:.2f} (Real: {details['neural']['real_logit']:.2f}, Spoof: {details['neural']['spoof_logit']:.2f})")
+                if "motion" in details:
+                    print(f"  Planar 2D Attack:   {details['motion'].get('is_planar_moving_2d', False)}")
+                    print(f"  Static 2D Attack:   {details['motion'].get('is_static_2d', False)}")
+                if "bezel" in details:
+                    print(f"  Bezel Lines Found:  V={details['bezel'].get('vertical_lines', 0)}, H={details['bezel'].get('horizontal_lines', 0)}")
                 print(f"  Liveness Verdict:   {best_liveness.verdict} (confidence={best_liveness.confidence:.2f})")
             return 1
     finally:

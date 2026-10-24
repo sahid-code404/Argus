@@ -102,6 +102,10 @@ class PamAuthenticator:
 
             self.engine.liveness_detector.reset()
 
+            consecutive_matches = 0
+            # In RGB fallback mode, require continuous multi-frame anti-spoof validation
+            min_required_matches = 1 if is_ir else 4
+
             while (time.monotonic() - start_time) < self.config.max_timeout:
                 ret, frame = cap.read()
                 if not ret or frame is None:
@@ -116,14 +120,18 @@ class PamAuthenticator:
                     require_liveness=self.config.require_liveness,
                 )
 
-                if result.matched:
-                    elapsed = time.monotonic() - start_time
-                    msg = (
-                        f"Face authentication verified for {user} in {elapsed:.2f}s "
-                        f"(confidence={result.confidence:.3f}, liveness={result.liveness.verdict}, "
-                        f"device={camera_dev.type_label})"
-                    )
-                    return True, msg
+                if result.matched and result.liveness.is_live:
+                    consecutive_matches += 1
+                    if consecutive_matches >= min_required_matches:
+                        elapsed = time.monotonic() - start_time
+                        msg = (
+                            f"Face authentication verified for {user} in {elapsed:.2f}s "
+                            f"(confidence={result.confidence:.3f}, liveness={result.liveness.verdict}, "
+                            f"device={camera_dev.type_label})"
+                        )
+                        return True, msg
+                else:
+                    consecutive_matches = 0
 
                 # Short sleep to prevent busy waiting
                 time.sleep(0.01)
