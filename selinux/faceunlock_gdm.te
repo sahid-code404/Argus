@@ -1,0 +1,16 @@
+
+module faceunlock_gdm 1.0;
+
+require {
+	type ptmx_t;
+	type xdm_t;
+	type udev_exec_t;
+	type v4l_device_t;
+	class chr_file { map read write };
+	class file execute;
+}
+
+#============= xdm_t ==============
+allow xdm_t ptmx_t:chr_file { read write };
+allow xdm_t udev_exec_t:file execute;
+allow xdm_t v4l_device_t:chr_file map;

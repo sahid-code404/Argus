@@ -189,7 +189,11 @@ class FingerprintVerifier:
 
 
 def _get_output_stream():
-    """Locate and open the user's true interactive terminal screen to bypass PAM line buffering."""
+    """Locate and open the user's true interactive terminal screen to bypass PAM line buffering.
+
+    If running under a GUI display manager (GDM, LightDM, SDDM) or without an interactive TTY,
+    returns None to ensure NO raw ANSI escapes are emitted into GUI login dialogues.
+    """
     # 1. Try parent process (sudo) standard descriptors
     try:
         ppid = os.getppid()
@@ -200,14 +204,23 @@ def _get_output_stream():
     except Exception:
         pass
 
-    # 2. Try /dev/tty directly
+    # 2. Try /dev/tty directly if accessible
     try:
-        return open("/dev/tty", "w")
-    except OSError:
+        if os.path.exists("/dev/tty"):
+            fd = os.open("/dev/tty", os.O_WRONLY | os.O_NOCTTY)
+            return os.fdopen(fd, "w")
+    except Exception:
         pass
 
-    # 3. Fallback to sys.stdout
-    return sys.stdout
+    # 3. Only if sys.stdout is an actual interactive TTY
+    try:
+        if sys.stdout and sys.stdout.isatty():
+            return sys.stdout
+    except Exception:
+        pass
+
+    # Non-interactive / piped / GUI session (GDM, Polkit): suppress ANSI animations
+    return None
 
 
 class SimultaneousBiometrics:

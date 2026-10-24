@@ -39,7 +39,7 @@ class PamIntegrator:
     def __init__(self, install_prefix: str = "/opt/faceunlock"):
         self.install_prefix = Path(install_prefix)
         self.pam_script = self.install_prefix / "pam" / "pam_faceunlock.py"
-        self.pam_rule = f"auth       sufficient   pam_exec.so quiet stdout {self.pam_script}\n"
+        self.pam_rule = f"auth       sufficient   pam_exec.so quiet {self.pam_script}\n"
 
     def get_service_path(self, service: str) -> Optional[Path]:
         """Find the PAM configuration file in /etc/pam.d or /usr/lib/pam.d."""
