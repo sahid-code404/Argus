@@ -15,8 +15,11 @@ Techniques implemented:
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
+
+os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 import cv2
 import numpy as np
 

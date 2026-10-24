@@ -14,6 +14,8 @@ import os
 import sys
 import time
 from typing import List, Optional
+
+os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 import cv2
 import numpy as np
 

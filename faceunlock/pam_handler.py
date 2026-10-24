@@ -16,6 +16,8 @@ import os
 import sys
 import time
 from typing import Optional, Tuple
+
+os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 import cv2
 
 from faceunlock.config import FaceUnlockConfig
