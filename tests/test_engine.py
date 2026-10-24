@@ -67,8 +67,10 @@ def test_user_enrollment_and_persistence(temp_engine):
     assert len(loaded) == 2
     assert loaded[0].shape == (1, 128)
 
-    # Check similarity of reloaded vector
-    sim = temp_engine.compute_similarity(v1, loaded[0])
+    # Check similarity of reloaded vector in protected space
+    from faceunlock.crypto import project_embedding
+    v1_proj = project_embedding(v1, user)
+    sim = temp_engine.compute_similarity(v1_proj, loaded[0])
     assert sim > 0.999
 
     # Remove user

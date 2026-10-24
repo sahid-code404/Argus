@@ -49,11 +49,18 @@ class FaceUnlockConfig:
         search_paths = []
         if custom_path:
             search_paths.append(custom_path)
-        search_paths.extend([
-            DEFAULT_CONFIG_PATH_SYSTEM,
-            DEFAULT_CONFIG_PATH_USER,
-            str(Path(__file__).resolve().parent.parent / "config.ini"),
-        ])
+        if os.geteuid() != 0:
+            search_paths.extend([
+                DEFAULT_CONFIG_PATH_USER,
+                DEFAULT_CONFIG_PATH_SYSTEM,
+                str(Path(__file__).resolve().parent.parent / "config.ini"),
+            ])
+        else:
+            search_paths.extend([
+                DEFAULT_CONFIG_PATH_SYSTEM,
+                DEFAULT_CONFIG_PATH_USER,
+                str(Path(__file__).resolve().parent.parent / "config.ini"),
+            ])
 
         found_path = ""
         parser = configparser.ConfigParser()

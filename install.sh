@@ -32,7 +32,7 @@ if [ "$IS_ROOT" -eq 1 ]; then
     if command -v uv >/dev/null 2>&1; then
         echo "[*] Setting up isolated venv using uv..."
         uv venv "$INSTALL_PREFIX/venv"
-        uv pip install --python "$INSTALL_PREFIX/venv/bin/python" numpy opencv-python-headless
+        uv pip install --python "$INSTALL_PREFIX/venv/bin/python" numpy opencv-python-headless cryptography
     elif [ -d "$SCRIPT_DIR/venv" ]; then
         echo "[*] Copying pre-built virtual environment..."
         cp -r "$SCRIPT_DIR/venv" "$INSTALL_PREFIX/"
