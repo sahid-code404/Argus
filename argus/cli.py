@@ -251,6 +251,8 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig, model_name: str 
                 frame, primary_face, is_ir_mode=(selected_cam.camera_type == CameraType.INFRARED)
             )
             if not liveness.is_live:
+                if liveness.verdict == "INSUFFICIENT_TEMPORAL_HISTORY":
+                    continue
                 print(f"\033[91m[!] Spoof detected ({liveness.verdict})! Screen / photo / video attack rejected.\033[0m")
                 continue
 

@@ -93,6 +93,9 @@ def run_gui_test(user: str, engine: FaceEngine, config: Optional[FaceUnlockConfi
                 if liveness_res.is_live:
                     liveness_label = f"LIVE ({liveness_res.confidence:.2f})"
                     liveness_color = (50, 255, 120)
+                elif liveness_res.verdict == "INSUFFICIENT_TEMPORAL_HISTORY":
+                    liveness_label = "ANALYZING..."
+                    liveness_color = (255, 200, 40)
                 else:
                     liveness_label = f"SPOOF ({liveness_res.verdict})"
                     liveness_color = (60, 60, 255)

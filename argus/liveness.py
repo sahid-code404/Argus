@@ -74,6 +74,7 @@ class LivenessDetector:
         self.frame_history: List[np.ndarray] = []
         self.landmark_history: List[np.ndarray] = []
         self.eye_variance_history: List[float] = []
+        self.neural_history: List[float] = []
         self.max_history = 12
 
         self.neural_net: Optional[cv2.dnn.Net] = None
@@ -104,6 +105,7 @@ class LivenessDetector:
         self.frame_history.clear()
         self.landmark_history.clear()
         self.eye_variance_history.clear()
+        self.neural_history.clear()
 
     @staticmethod
     def extract_face_roi(image: np.ndarray, face_box: np.ndarray) -> Optional[np.ndarray]:
@@ -128,52 +130,34 @@ class LivenessDetector:
             return None
         return roi
 
-    def evaluate_neural(self, frame: np.ndarray, face_box: np.ndarray) -> Tuple[float, bool, dict]:
-        """Deep neural network face anti-spoofing via MiniFASNetV2-SE.
-
-        Outputs (probability_real: float, is_real: bool, details: dict).
-        Trained on CelebA-Spoof to detect 2D prints, screen replays, paper cutouts, masks.
-        """
-        if self.neural_net is None or frame is None:
-            return 0.85, True, {"status": "model_not_loaded"}
-
+    def _eval_single_scale(
+        self, frame: np.ndarray, cx: float, cy: float, base_dim: float, scale: float
+    ) -> Optional[Tuple[float, float, float]]:
+        """Evaluate MiniFASNet on a centered square crop at a specific scale factor."""
         h, w = frame.shape[:2]
-        x, y, fw, fh = [int(v) for v in face_box[:4]]
-        max_dim = max(fw, fh)
-        cx, cy = x + fw / 2, y + fh / 2
-
-        crop_size = int(max_dim * 1.5)
-        x1 = int(cx - crop_size / 2)
-        y1 = int(cy - crop_size / 2)
+        stained_size = max(16, int(base_dim * scale))
+        x1 = int(cx - stained_size / 2.0)
+        y1 = int(cy - stained_size / 2.0)
+        x2 = x1 + stained_size
+        y2 = y1 + stained_size
 
         crop_x1 = max(0, x1)
         crop_y1 = max(0, y1)
-        crop_x2 = min(w, x1 + crop_size)
-        crop_y2 = min(h, y1 + crop_size)
-
-        top_pad = max(0, -y1)
-        left_pad = max(0, -x1)
-        bottom_pad = max(0, (y1 + crop_size) - h)
-        right_pad = max(0, (x1 + crop_size) - w)
+        crop_x2 = min(w, x2)
+        crop_y2 = min(h, y2)
 
         cropped = frame[crop_y1:crop_y2, crop_x1:crop_x2]
         if cropped.size == 0 or cropped.shape[0] < 10 or cropped.shape[1] < 10:
-            return 0.0, False, {"status": "invalid_crop"}
+            return None
+
+        top_pad = max(0, -y1)
+        left_pad = max(0, -x1)
+        bottom_pad = max(0, y2 - h)
+        right_pad = max(0, x2 - w)
 
         padded = cv2.copyMakeBorder(cropped, top_pad, bottom_pad, left_pad, right_pad, cv2.BORDER_REFLECT_101)
-
-        # Resize to 128x128 with letterboxing
-        ratio = 128.0 / max(padded.shape[:2])
-        scaled = tuple([int(dim * ratio) for dim in padded.shape[:2]])
-        resized = cv2.resize(padded, (scaled[1], scaled[0]), interpolation=cv2.INTER_AREA)
-
-        dw = 128 - scaled[1]
-        dh = 128 - scaled[0]
-        top, bottom = dh // 2, dh - (dh // 2)
-        left, right = dw // 2, dw - (dw // 2)
-
-        input_img = cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_REFLECT_101)
-        input_rgb = cv2.cvtColor(input_img, cv2.COLOR_BGR2RGB)
+        resized = cv2.resize(padded, (128, 128), interpolation=cv2.INTER_AREA)
+        input_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
 
         blob = input_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
         blob = np.expand_dims(blob, 0)
@@ -185,17 +169,53 @@ class LivenessDetector:
         real_logit = float(logits[0])
         spoof_logit = float(logits[1])
         logit_diff = real_logit - spoof_logit
-
-        # Sigmoid probability
         prob_real = 1.0 / (1.0 + math.exp(-logit_diff))
-        # Strict veto cutoff: real face must have real_logit >= spoof_logit (prob_real >= 0.50)
-        is_real = logit_diff >= 0.0
+        return prob_real, real_logit, spoof_logit
 
-        return prob_real, is_real, {
-            "real_logit": real_logit,
-            "spoof_logit": spoof_logit,
+    def evaluate_neural(self, frame: np.ndarray, face_box: np.ndarray) -> Tuple[float, bool, dict]:
+        """Deep neural network face anti-spoofing via MiniFASNet multi-scale evaluation.
+
+        Outputs (probability_real: float, is_real: bool, details: dict).
+        Trained on CelebA-Spoof to detect 2D prints, screen replays, paper cutouts, masks.
+        """
+        if self.neural_net is None or frame is None:
+            return 0.85, True, {"status": "model_not_loaded"}
+
+        x, y, fw, fh = [int(v) for v in face_box[:4]]
+        cx = x + fw / 2.0
+        cy = y + fh / 2.0
+        base_dim = max(fw, fh)
+
+        # Multi-scale evaluation (scales 1.8 and 2.4 provide full facial and context cues)
+        scale_results = []
+        for s in (1.8, 2.4):
+            res = self._eval_single_scale(frame, cx, cy, base_dim, s)
+            if res is not None:
+                scale_results.append(res)
+
+        if not scale_results:
+            return 0.0, False, {"status": "invalid_crop"}
+
+        avg_prob = float(np.mean([r[0] for r in scale_results]))
+        avg_real = float(np.mean([r[1] for r in scale_results]))
+        avg_spoof = float(np.mean([r[2] for r in scale_results]))
+        logit_diff = avg_real - avg_spoof
+
+        # Temporal smoothing
+        self.neural_history.append(avg_prob)
+        if len(self.neural_history) > self.max_history:
+            self.neural_history.pop(0)
+
+        smoothed_prob = float(np.mean(self.neural_history))
+        is_real = bool(smoothed_prob >= 0.50)
+
+        return smoothed_prob, is_real, {
+            "real_logit": avg_real,
+            "spoof_logit": avg_spoof,
             "logit_diff": logit_diff,
-            "prob_real": prob_real,
+            "prob_real": avg_prob,
+            "smoothed_prob": smoothed_prob,
+            "history_len": len(self.neural_history),
         }
 
     @staticmethod
@@ -593,7 +613,7 @@ class LivenessDetector:
             confidence *= (glare_score * 0.3 + 0.7)
 
             # Strict Veto Checks:
-            if not is_neural_real and self.neural_net is not None:
+            if not is_neural_real and self.neural_net is not None and len(self.neural_history) >= 2:
                 is_live = False
                 verdict = "NEURAL_PAD_SPOOF"
             elif (motion_details.get("is_static_2d") or eye_details.get("is_frozen_photo")) and len(self.landmark_history) >= 3:

@@ -214,7 +214,7 @@ def run_gui_enrollment(
     total_stages = len(ENROLL_STAGES)
     current_stage = 0
     stage_hold_frames = 0
-    needed_hold_frames = 6
+    needed_hold_frames = 5
 
     total_ticks = 40
     ticks_per_stage = total_ticks // total_stages
@@ -275,10 +275,16 @@ def run_gui_enrollment(
                     frame, best_face, is_ir_mode=False
                 )
                 if not liveness_res.is_live:
-                    is_spoof = True
-                    stage_hold_frames = 0
-                    bottom_instr = "PRESENTATION ATTACK DETECTED"
-                    hint_str = f"Live face required! {liveness_res.verdict}"
+                    if liveness_res.verdict == "INSUFFICIENT_TEMPORAL_HISTORY":
+                        is_spoof = False
+                        stage_hold_frames = 0
+                        bottom_instr = stage_info["label"]
+                        hint_str = "Align face and hold still..."
+                    else:
+                        is_spoof = True
+                        stage_hold_frames = 0
+                        bottom_instr = "PRESENTATION ATTACK DETECTED"
+                        hint_str = f"Live face required! {liveness_res.verdict}"
                 else:
                     stage_hold_frames += 1
                     if stage_hold_frames >= needed_hold_frames:
