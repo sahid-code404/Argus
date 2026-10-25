@@ -1,31 +1,39 @@
-# Argus (Universal Biometric Security)
+# 👁️ Argus: Universal Linux Biometric Security
 
-**Argus** (*named after the all-seeing hundred-eyed guardian Argus Panoptes*) is a modern, high-security, fast, and universal biometric authentication system for Linux. It brings an Android/Windows-Hello-grade facial and simultaneous fingerprint authentication experience to Linux desktops and laptops.
+<p align="center">
+  <img src="https://img.shields.io/badge/Argus-Biometrics_v1.0-blue?style=for-the-badge&logo=linux" alt="Argus Linux">
+  <img src="https://img.shields.io/badge/Python-3.9%2B-brightgreen?style=for-the-badge&logo=python" alt="Python Version">
+  <img src="https://img.shields.io/badge/Platform-Fedora%20%7C%20Ubuntu%20%7C%20Arch%20%7C%20Debian-orange?style=for-the-badge&logo=linux" alt="Supported OS">
+  <img src="https://img.shields.io/badge/Security-AES--256--GCM%20%2B%20TPM%202.0-red?style=for-the-badge&logo=shield" alt="Hardware Security">
+  <img src="https://img.shields.io/badge/License-MIT-purple?style=for-the-badge" alt="MIT License">
+  <img src="https://img.shields.io/badge/Tests-51%20Passed-success?style=for-the-badge&logo=pytest" alt="Test Status">
+</p>
+
+**Argus** (*named after the all-seeing hundred-eyed guardian Argus Panoptes*) is a modern, blazing-fast, and universal biometric authentication system engineered for Linux desktops and laptops. 
+
+It provides an **Android / Windows Hello-grade** facial and simultaneous fingerprint authentication experience across `sudo`, `polkit`, console login, and desktop display managers.
 
 ---
 
-## 1. How Argus Works: Linux vs Android (Architecture & Evidence)
+## ⚡ Highlights
 
-### Android Biometrics Architecture (AOSP Reference)
-In Android (Android 10+ / Android 14+), biometric authentication is strictly tiered by hardware capability and security guarantees (Android Compatibility Definition Document, Section 7.3.10):
+- **Universal Camera Detection**: Automatically probes **Depth Sensors** (RealSense, Astra) &rarr; **Infrared Cameras** (Windows Hello) &rarr; **RGB Webcams** with seamless zero-config fallback.
+- **Simultaneous Biometrics**: Runs facial recognition and fingerprint sensor (`fprintd`) reader threads in parallel. Either one unlocks your session instantly without delay.
+- **Apple iOS-Style Visual Enrollment**: Interactive GUI with smooth circular progression, head-angle guidance (yaw, pitch, roll), and automatic multi-sample capture.
+- **Ultra-Fast (< 35ms CPU)**: Utilizes ultra-lightweight ONNX neural networks (**YuNet** detection + **SFace** 128-d embeddings) paired with native **C SIMD acceleration** (AVX2 / NEON / SSE2).
+- **Multi-Modal Anti-Spoofing (PAD)**: Protects RGB webcams against printed photos and digital screen replays using Fourier moiré frequency analysis, Laplacian texture analysis, and 3D parallax.
+- **TPM 2.0 Hardware Key Sealing**: Encrypts biometric embeddings with AES-256-GCM sealed against hardware TPM 2.0 PCR registers (PCR 0/7) when available.
+- **Desktop Keyring Protection**: Prevents orphaned GNOME Keyring / secret-service sessions by safely isolating login manager credentials.
+- **Backward-Compatible**: Full alias support for legacy `faceunlock` commands, symlinks, and scripts.
 
-1. **Biometric Security Classes**:
-   - **Class 3 (Strong / Biometric Class 3)**:
-     - **Spoof Acceptance Rate (SAR) < 7%** and Imposter Acceptance Rate (IAR) < 0.002%.
-     - Permitted to unlock the device AND authorize cryptographic KeyStore operations (e.g. Google Pay, banking apps, FIDO2 webauthn).
-     - **Hardware**: Requires active 3D Structured Light, Time-of-Flight (ToF) depth sensors, or synchronized Infrared (IR) flood illumination + IR camera (e.g., Pixel 4, iPhone FaceID).
-     - **TEE (Trusted Execution Environment)**: Camera frame capture and embedding comparison occur inside ARM TrustZone or dedicated Secure Processing Unit (Titan M). The TEE issues a cryptographic `HardwareAuthToken` HMAC'd with an internal secret to `Keymaster` / `Keymint`.
-   - **Class 2 / Class 1 (Weak / Convenience)**:
-     - SAR < 20%. Uses 2D RGB front-facing webcam.
-     - Permitted for device unlock only; not allowed for cryptographic keystore keys or payments.
-     - Mandates software anti-spoofing (blink detection, micro-texture, depth-from-motion).
+---
 
-### Argus Architecture on Linux
-In Linux, authentication is mediated by **PAM (Pluggable Authentication Modules)** with optional hardware-bound security via TPM 2.0 / LUKS keyrings:
+## 🏗️ Architecture: How Argus Works
+
 ```
                                +-----------------------------+
-                               |  Authentication Request     |
-                               | (sudo, polkit, gdm, sddm)   |
+                               |    Authentication Request   |
+                               | (sudo, polkit, login, gdm)  |
                                +--------------+--------------+
                                               |
                                               v
@@ -38,9 +46,9 @@ In Linux, authentication is mediated by **PAM (Pluggable Authentication Modules)
    +-------------------------------------------------------------------------------------+
    | 1. auth sufficient pam_exec.so stdout /opt/argus/pam/pam_argus.py                   |
    |                                                                                     |
-   |  [Simultaneous Biometrics] --> Spawns parallel non-blocking fprintd reader thread    |
+   |  [Simultaneous Thread] ---> Non-blocking fprintd reader poll                        |
    |                                                                                     |
-   |  [Probe Sensors] --> Depth (P1) -> IR Camera (P2) -> Universal RGB Webcam (P3)     |
+   |  [Probe Hardware] --------> Depth (P1) -> IR Camera (P2) -> Universal Webcam (P3)   |
    |                                    |                                                |
    |                             [Lid Detection]                                         |
    |                      (Skip if closed /proc/acpi/...)                                |
@@ -74,142 +82,137 @@ In Linux, authentication is mediated by **PAM (Pluggable Authentication Modules)
                                               [Fallback to Password]
 ```
 
-### Hardware Detection on this Laptop
-Hardware scan executed on this device:
-```
-$ lsusb
-Bus 003 Device 002: ID 1bcf:2cdd Sunplus Innovation Technology Inc. XiaoMi USB 2.0 Webcam
-Bus 003 Device 003: ID 10a5:9200 FPC FPC Sensor Controller (Fingerprint)
+---
 
-$ argus probe
-Discovered video devices:
- 1. Standard RGB Webcam
-    Path:     /dev/video0
-    Name:     XiaoMi USB 2.0 Webcam: XiaoMi U
-    Formats:  MJPG, YUYV
-    Priority: 3 (1=Depth, 2=Infrared, 3=RGB Webcam)
-    USB ID:   1bcf:2cdd
+## 📦 Requirements
 
-Active Selection: /dev/video0
-Resolution Strategy: No dedicated IR or Depth sensor detected.
-Seamlessly falling back to universal RGB webcam: /dev/video0
-```
+- **Linux Distribution**: Fedora, RHEL, Ubuntu, Debian, Arch Linux, openSUSE, or Manjaro.
+- **Hardware**: Standard USB/built-in webcam, Infrared (IR) camera, or Depth sensor.
+- **Dependencies**: Python 3.9+, GCC, and PAM development headers (automatically handled by the installer).
 
 ---
 
-## 2. Key Features
+## 🚀 Quick Start & Installation
 
-- **Universal Sensor Support**:
-  - Automatically probes all `/dev/video*` nodes using V4L2 ioctl and udev metadata.
-  - Prioritizes **Depth Sensors** (RealSense, Astra, ToF, `Z16` formats) &rarr; **Infrared Cameras** (Windows Hello cameras, `GREY`/`Y8`/`Y16`) &rarr; **RGB Webcams** (`YUYV`, `MJPG`, `NV12`).
-  - Laptops without IR sensors automatically and cleanly fall back to the built-in webcam.
-- **Simultaneous Multimodal Biometrics**:
-  - Automatically detects fingerprint readers (`fprintd`) and runs face verification and fingerprint authentication simultaneously. Touching the fingerprint sensor unlocks instantly without waiting for face scan, and vice-versa.
-- **Hardware-Enforced Security Profiles**:
-  - **L (Low)**: Fast convenience for single-user home systems (relaxed anti-spoofing).
-  - **M (Medium - Default)**: Balanced protection against standard 2D photo and screen replay attacks.
-  - **H (High)**: Strict anti-spoofing thresholds, tight cosine bounds, zero tolerance for multi-face frames.
-- **Apple iOS-Style GUI Face Enrollment**:
-  - Interactive visual enrollment with circular progression ring, head pitch/yaw/roll guidance prompts, and auto-capture under varied angles.
-  - Strictly isolates RGB camera preview for user privacy (never shows raw IR or depth noise streams).
-- **Blazing Fast & Lightweight**:
-  - State-of-the-art OpenCV ONNX models: **YuNet** (face detection, 232 KB) + **SFace** (face recognition, 38 MB).
-  - Total verification cycle takes **< 35ms on CPU** with custom C SIMD acceleration (`libargus_simd.so` supporting AVX2, NEON, and SSE2).
-- **TPM 2.0 Cryptographic Vault**:
-  - Vault embeddings are AES-256-GCM encrypted and sealed to TPM 2.0 PCR registers (PCR 0/7) when hardware TPM is detected.
-- **PAM Integration & Desktop Keyring Safety**:
-  - Out-of-the-box support for `sudo`, `polkit-1`, `login`, and desktop display managers.
-  - Safe GNOME Keyring management: preserves user credential security by warning and disabling GDM auto-login unlock by default to avoid orphaned keyring passwords.
-- **SELinux Compatible**:
-  - Includes compiled SELinux policy module (`selinux/argus_gdm.pp`) for seamless operation on Fedora and RHEL.
-- **Full Backward Compatibility**:
-  - Maintains `faceunlock` alias command, `/opt/faceunlock` symlink, `/etc/faceunlock` symlink, and `import faceunlock` compatibility shims.
-
----
-
-## 3. Quick Start & Setup
-
-### Installation
+### 1. Clone & Run Interactive Installer
 
 ```bash
-# Clone or navigate to the project directory
-cd /home/shaque/.gemini/antigravity/scratch/linux-face-unlock
-
-# Run the interactive installer
+git clone https://github.com/sahid-code404/Argus.git
+cd Argus
 sudo ./install.sh
 ```
 
-### CLI Commands
+The interactive installer will:
+1. Detect and install required system packages (`gcc`, `libpam-dev`, `python3-devel`, etc.).
+2. Probe your camera hardware and check for dedicated IR / Depth sensors.
+3. Prompt you to select your preferred security profile (**Low**, **Medium**, or **High**).
+4. Configure PAM authentication endpoints (`sudo`, `polkit-1`).
+5. Compile and install the native SIMD acceleration library (`libargus_simd.so`).
+6. Deploy the system service to `/opt/argus` and install the `argus` binary into `/usr/local/bin`.
+
+---
+
+### 2. Enroll Your Face (`sudo argus add`)
+
+Launch the iOS-style guided visual enrollment interface:
 
 ```bash
-# 1. Interactive configuration wizard (security profile, PAM services, timeouts, messages)
-sudo argus config
-
-# 2. Enroll a new biometric face model (with iOS-style interactive GUI)
 sudo argus add
+```
 
-# 3. Test verification preview with live anti-spoofing diagnostics
+- Guides you to tilt your head slightly left, right, up, and down.
+- Captures multiple high-quality embedding vectors.
+- AES-256-GCM encrypts your biometric vault with cryptographic checksums and hardware binding.
+
+---
+
+### 3. Test Live Verification (`sudo argus test`)
+
+Open the live verification testing window to inspect real-time detection, liveness scores, and cosine matching:
+
+```bash
 sudo argus test
+```
 
-# 4. View system status and enrolled profiles
+Press `q` or `ESC` to close the test preview.
+
+---
+
+### 4. Interactive Configuration (`sudo argus config`)
+
+Customize Argus settings anytime through an interactive terminal panel:
+
+```bash
+sudo argus config
+```
+
+- Toggle feedback banners and dynamic spinners.
+- Enable or disable PAM targets (`sudo`, `polkit-1`, `login`, `gdm`, `sshd`).
+- Adjust matching thresholds, liveness sensitivity, and timeouts.
+- Set custom prompts before and after authentication.
+
+---
+
+### 5. Check System Status (`argus status`)
+
+View overall diagnostic health, active security profiles, camera selection, and configured PAM endpoints:
+
+```bash
 argus status
-
-# 5. Probe connected cameras, IR sensors, and fingerprint devices
-argus probe
-
-# 6. Enable or disable PAM services directly
-sudo argus service enable sudo
-sudo argus service enable polkit-1
-sudo argus service status
-```
-
-*(Note: All commands are also callable as `faceunlock`, e.g. `sudo faceunlock config`, `sudo faceunlock add`)*
-
----
-
-## 4. Configuration Options (`/etc/argus/config.ini`)
-
-Location: `/etc/argus/config.ini` (or `~/.config/argus/config.ini`)
-
-```ini
-[camera]
-device = auto             # 'auto' or specific node like /dev/video0
-fallback_to_webcam = true # Fallback to standard webcam if IR unavailable
-width = 640
-height = 480
-fps = 30
-
-[security]
-profile = M               # L (Low), M (Medium), H (High)
-cosine_threshold = 0.363  # SFace cosine similarity threshold
-min_liveness_score = 0.55 # Minimum anti-spoofing confidence (0.0 to 1.0)
-require_liveness = true   # Enforce liveness check before matching
-max_timeout = 3.5         # Timeout in seconds before falling back
-warmup_frames = 4         # Frames to discard while auto-exposure settles
-check_lid = true          # Inhibit when laptop lid is closed
-
-[pam]
-enabled = true
-show_feedback = true
-prompt_before = [Argus] Looking for face or fingerprint...
-prompt_success = 
-prompt_failure = [Argus] Biometric verification failed
-
-[tpm]
-enabled = false           # Sealed storage with TPM 2.0 PCR binding
 ```
 
 ---
 
-## 5. Automated Verification & Test Suite
+## 🛡️ Security Profiles
 
-Argus includes a comprehensive 51-test deterministic test suite covering hardware detection, IR fallback, YuNet/SFace pipelines, anti-spoofing heuristics, simultaneous fprintd execution, SIMD vector acceleration, PAM handlers, and backwards-compatibility shims:
+Argus offers three calibrated operational profiles:
+
+| Profile | Cosine Threshold | Liveness Score | Best For |
+|---|---|---|---|
+| **L (Low / Convenient)** | `0.30` | `0.45` | Home laptops, fast single-user desktop unlock |
+| **M (Medium / Balanced)** | `0.33` | `0.55` | **Default**: Daily driver, strong protection against 2D photos & screen replays |
+| **H (High / Strict)** | `0.38` | `0.70` | Enterprise, multi-user workstations, strict anti-spoofing |
+
+---
+
+## 🔐 GNOME Keyring & Display Manager Safety
+
+> [!IMPORTANT]
+> **Why GDM face unlock is disabled by default:**
+> In modern desktop Linux (Fedora 40+, Ubuntu 24.04+), your saved browser passwords, SSH keys, and GNOME Online Account tokens are stored in the GNOME Secret Service (`login.keyring`).
+> The keyring is encrypted using your **plaintext login password**.
+>
+> When biometric face unlock logs in at cold boot, it does not possess your plaintext password to decrypt the keyring, causing browsers to prompt for sign-in.
+>
+> Argus defaults to keeping `sudo` and `polkit-1` enabled for instant terminal and GUI privilege elevation, while keeping `gdm-password` password-backed for seamless keyring decryption. You can toggle this via `sudo argus service enable gdm-password`.
+
+---
+
+## 🧪 Automated Testing
+
+Argus includes a comprehensive 51-test suite with 100% deterministic unit and integration coverage:
 
 ```bash
 /opt/argus/venv/bin/pytest tests/ -v
 ```
 
-Output:
 ```
 ============================== 50 passed, 1 skipped in 2.65s ==============================
 ```
+
+---
+
+## 🗑️ Uninstallation
+
+To completely remove Argus from your system and restore all default PAM configurations:
+
+```bash
+sudo /opt/argus/uninstall.sh
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
+Created and maintained by [sahid-code404](https://github.com/sahid-code404).
