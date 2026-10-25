@@ -4,6 +4,7 @@
 #  Simultaneous Face + Fingerprint PAM Biometric Authentication
 # =================================================================
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_PREFIX="/opt/argus"
@@ -53,17 +54,50 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     INSTALL_DEPS="${dep_ans:-Y}"
 fi
 
+NEW_PKGS=()
 if [[ "$INSTALL_DEPS" =~ ^[Yy]$ ]]; then
-    echo -e "  [*] Installing dependencies using native system package manager..."
+    echo -e "  [*] Checking dependencies using native system package manager..."
     if command -v dnf >/dev/null 2>&1; then
-        dnf install -y python3-devel gcc gcc-c++ make v4l-utils tpm2-tools pam-devel libglvnd-glx 2>/dev/null || true
+        for p in python3-devel gcc gcc-c++ make v4l-utils tpm2-tools pam-devel libglvnd-glx; do
+            if ! rpm -q "$p" >/dev/null 2>&1; then
+                NEW_PKGS+=("$p")
+            fi
+        done
+        if [ ${#NEW_PKGS[@]} -gt 0 ]; then
+            echo -e "  [*] Installing newly required packages: ${NEW_PKGS[*]}"
+            dnf install -y "${NEW_PKGS[@]}" 2>/dev/null || true
+        fi
     elif command -v apt-get >/dev/null 2>&1; then
         apt-get update -qq 2>/dev/null || true
-        apt-get install -y python3-dev python3-venv gcc g++ make v4l-utils tpm2-tools libpam0g-dev libgl1 2>/dev/null || true
+        for p in python3-dev python3-venv gcc g++ make v4l-utils tpm2-tools libpam0g-dev libgl1; do
+            if ! dpkg -s "$p" 2>/dev/null | grep -q "Status: install ok installed"; then
+                NEW_PKGS+=("$p")
+            fi
+        done
+        if [ ${#NEW_PKGS[@]} -gt 0 ]; then
+            echo -e "  [*] Installing newly required packages: ${NEW_PKGS[*]}"
+            apt-get install -y "${NEW_PKGS[@]}" 2>/dev/null || true
+        fi
     elif command -v pacman >/dev/null 2>&1; then
-        pacman -S --noconfirm python gcc make v4l-utils tpm2-tools pam 2>/dev/null || true
+        for p in python gcc make v4l-utils tpm2-tools pam; do
+            if ! pacman -Q "$p" >/dev/null 2>&1; then
+                NEW_PKGS+=("$p")
+            fi
+        done
+        if [ ${#NEW_PKGS[@]} -gt 0 ]; then
+            echo -e "  [*] Installing newly required packages: ${NEW_PKGS[*]}"
+            pacman -S --noconfirm "${NEW_PKGS[@]}" 2>/dev/null || true
+        fi
     elif command -v zypper >/dev/null 2>&1; then
-        zypper install -y python3-devel gcc gcc-c++ make v4l-utils tpm2-tools pam-devel 2>/dev/null || true
+        for p in python3-devel gcc gcc-c++ make v4l-utils tpm2-tools pam-devel; do
+            if ! rpm -q "$p" >/dev/null 2>&1; then
+                NEW_PKGS+=("$p")
+            fi
+        done
+        if [ ${#NEW_PKGS[@]} -gt 0 ]; then
+            echo -e "  [*] Installing newly required packages: ${NEW_PKGS[*]}"
+            zypper install -y "${NEW_PKGS[@]}" 2>/dev/null || true
+        fi
     fi
     echo -e "  ${C_GREEN}✔${C_RESET} System packages verified"
 else
@@ -265,11 +299,10 @@ fi
 echo -e "\n${C_BOLD}--> Step 5/6: Deploying Files & Native SIMD Accelerator...${C_RESET}"
 mkdir -p "$INSTALL_PREFIX" "$CONFIG_DIR" "$FACES_DIR" "$MODELS_DIR"
 
-# SIMD build
-if command -v gcc >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/src/fast_simd.c" ]; then
-    echo -e "  [*] Compiling native AVX2/FMA vector acceleration in C..."
-    gcc -O3 -mavx2 -mfma -shared -fPIC -o "$SCRIPT_DIR/argus/libargus_simd.so" "$SCRIPT_DIR/src/fast_simd.c" 2>/dev/null || true
-    [ -f "$SCRIPT_DIR/argus/libargus_simd.so" ] && echo -e "  ${C_GREEN}✔${C_RESET} Native C SIMD library compiled successfully"
+# Record newly installed packages for clean uninstallation
+if [ ${#NEW_PKGS[@]} -gt 0 ]; then
+    echo "${NEW_PKGS[*]}" > "$INSTALL_PREFIX/.installed_packages"
+    echo "${NEW_PKGS[*]}" > "$CONFIG_DIR/.installed_packages"
 fi
 
 cp -rf "$SCRIPT_DIR/argus" "$INSTALL_PREFIX/"
@@ -278,13 +311,32 @@ cp -rf "$SCRIPT_DIR/pam" "$INSTALL_PREFIX/"
 [ -d "$SCRIPT_DIR/src" ] && cp -rf "$SCRIPT_DIR/src" "$INSTALL_PREFIX/"
 cp -rf "$SCRIPT_DIR/models/"* "$MODELS_DIR/"
 
+# SIMD build directly into system root (/opt/argus) - NEVER in home folder
+if command -v gcc >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/src/fast_simd.c" ]; then
+    echo -e "  [*] Compiling native AVX2/FMA vector acceleration in C into system root ($INSTALL_PREFIX)..."
+    gcc -O3 -mavx2 -mfma -shared -fPIC -o "$INSTALL_PREFIX/argus/libargus_simd.so" "$SCRIPT_DIR/src/fast_simd.c" 2>/dev/null || true
+    if [ -f "$INSTALL_PREFIX/argus/libargus_simd.so" ]; then
+        cp -f "$INSTALL_PREFIX/argus/libargus_simd.so" "$INSTALL_PREFIX/faceunlock/libfaceunlock_simd.so" 2>/dev/null || true
+        chmod 755 "$INSTALL_PREFIX/argus/libargus_simd.so" "$INSTALL_PREFIX/faceunlock/libfaceunlock_simd.so"
+        echo -e "  ${C_GREEN}✔${C_RESET} Native C SIMD library compiled into /opt/argus"
+    fi
+fi
+
+# Clean up any leftover compiled files in the source tree to keep home directory clean
+rm -f "$SCRIPT_DIR/argus/libargus_simd.so" "$SCRIPT_DIR/faceunlock/libfaceunlock_simd.so"
+find "$SCRIPT_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find "$SCRIPT_DIR" -type f -name "*.pyc" -delete 2>/dev/null || true
+if [ -n "$TARGET_USER" ]; then
+    TARGET_GROUP=$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")
+    chown -R "$TARGET_USER:$TARGET_GROUP" "$SCRIPT_DIR" 2>/dev/null || true
+fi
+
 # Create backward-compatibility directory symlinks
 ln -sfn "$INSTALL_PREFIX" /opt/faceunlock
 ln -sfn "$CONFIG_DIR" /etc/faceunlock
 
 chmod 755 "$INSTALL_PREFIX/pam/pam_argus.py"
 chmod 755 "$INSTALL_PREFIX/pam/pam_faceunlock.py"
-[ -f "$INSTALL_PREFIX/argus/libargus_simd.so" ] && chmod 755 "$INSTALL_PREFIX/argus/libargus_simd.so"
 
 # Setup virtual environment
 UV_BIN="$(command -v uv 2>/dev/null || true)"
@@ -412,12 +464,6 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     if [[ "$add_ans" =~ ^[Yy]$ ]]; then
         echo ""
         "$BIN_DIR/argus" add "$TARGET_USER" || true
-
-        # Sync vault to user home
-        mkdir -p "$TARGET_HOME/.config/argus/faces"
-        cp -f "$FACES_DIR/$TARGET_USER.vault" "$TARGET_HOME/.config/argus/faces/" 2>/dev/null || true
-        cp -f "$FACES_DIR/.vault_secret" "$TARGET_HOME/.config/argus/faces/" 2>/dev/null || true
-        chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config/argus" 2>/dev/null || true
 
         echo ""
         read -rp "Test live camera verification preview now? [Y/n]: " test_ans
