@@ -42,11 +42,12 @@ def test_pam_integrator_enable_disable(monkeypatch, tmp_path):
     assert integrator.is_service_enabled("gdm-password")
 
     content = (etc_dir / "gdm-password").read_text()
-    assert "pam_faceunlock.py" in content
+    assert ("pam_argus.py" in content) or ("pam_faceunlock.py" in content)
 
     # Disable service
     disabled = integrator.disable_service("gdm-password")
     assert disabled
     assert not integrator.is_service_enabled("gdm-password")
     clean_content = (etc_dir / "gdm-password").read_text()
+    assert "pam_argus.py" not in clean_content
     assert "pam_faceunlock.py" not in clean_content

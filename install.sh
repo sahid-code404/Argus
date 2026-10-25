@@ -1,15 +1,15 @@
 #!/bin/bash
 # =================================================================
-#  Universal Linux Face Unlock - Capability-Driven Interactive Installer
+#  Argus - Capability-Driven Universal Biometric Setup Wizard
 #  Simultaneous Face + Fingerprint PAM Biometric Authentication
 # =================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_PREFIX="/opt/faceunlock"
+INSTALL_PREFIX="/opt/argus"
 BIN_DIR="/usr/local/bin"
-CONFIG_DIR="/etc/faceunlock"
-FACES_DIR="/etc/faceunlock/faces"
+CONFIG_DIR="/etc/argus"
+FACES_DIR="/etc/argus/faces"
 MODELS_DIR="$INSTALL_PREFIX/models"
 
 # ANSI Colors
@@ -39,7 +39,7 @@ INTERACTIVE=0
 [ -t 0 ] && INTERACTIVE=1
 
 echo -e "\n${C_CYAN}╭──────────────────────────────────────────────────────────╮${C_RESET}"
-echo -e "${C_CYAN}│${C_RESET} ${C_BOLD}Linux Face Unlock - Universal Biometric Setup Wizard${C_RESET}     ${C_CYAN}│${C_RESET}"
+echo -e "${C_CYAN}│${C_RESET} ${C_BOLD}Argus - Universal Biometric Setup Wizard${C_RESET}                 ${C_CYAN}│${C_RESET}"
 echo -e "${C_CYAN}│${C_RESET} ${C_DIM}Simultaneous Multi-Modal PAM Biometric Authentication${C_RESET}    ${C_CYAN}│${C_RESET}"
 echo -e "${C_CYAN}╰──────────────────────────────────────────────────────────╯${C_RESET}\n"
 
@@ -78,11 +78,13 @@ echo -e "\n${C_BOLD}--> Step 2/6: Searching Capable Exact Working Hardware...${C
 PYTHON_TEMP_EXEC="python3"
 if [ -x "$SCRIPT_DIR/venv/bin/python" ]; then
     PYTHON_TEMP_EXEC="$SCRIPT_DIR/venv/bin/python"
+elif [ -x "$INSTALL_PREFIX/venv/bin/python" ]; then
+    PYTHON_TEMP_EXEC="$INSTALL_PREFIX/venv/bin/python"
 fi
 
 CAM_PROBE_JSON=$(PYTHONPATH="$SCRIPT_DIR" "$PYTHON_TEMP_EXEC" -c '
 import json
-from faceunlock.hardware import probe_cameras, select_camera, CameraType
+from argus.hardware import probe_cameras, select_camera, CameraType
 
 cams = probe_cameras(include_all=False)
 res = []
@@ -118,7 +120,6 @@ if [ -n "$HAS_IR" ]; then
     echo -e "  ${C_GREEN}✔${C_RESET} Infrared (IR) Camera Sensor Detected: $SELECTED_NAME ($SELECTED_DEV)"
     echo -e "  [*] Testing IR emitter activation with sensor combinations..."
 
-    # Attempt to stream brief test frames to trigger IR emitter
     if command -v v4l2-ctl >/dev/null 2>&1; then
         v4l2-ctl -d "$SELECTED_DEV" --stream-mmap --stream-count=30 --stream-to=/dev/null >/dev/null 2>&1 || true
     fi
@@ -236,12 +237,12 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     [[ ! "$sudo_ans" =~ ^[Yy]$ ]] && ENABLE_SUDO="false"
 
     # Polkit
-    read -rp " Enable Face Unlock for Polkit GUI administration dialogs? [Y/n]: " polkit_ans
+    read -rp " Enable Argus for Polkit GUI administration dialogs? [Y/n]: " polkit_ans
     polkit_ans="${polkit_ans:-Y}"
     [[ ! "$polkit_ans" =~ ^[Yy]$ ]] && ENABLE_POLKIT="false"
 
     # Console Login
-    read -rp " Enable Face Unlock for console / virtual terminal login? [y/N]: " login_ans
+    read -rp " Enable Argus for console / virtual terminal login? [y/N]: " login_ans
     login_ans="${login_ans:-N}"
     [[ "$login_ans" =~ ^[Yy]$ ]] && ENABLE_LOGIN="true"
 
@@ -254,7 +255,7 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     echo -e "  ${C_DIM}causing browsers (Chrome, Brave, etc.) to appear signed out until you${C_RESET}"
     echo -e "  ${C_DIM}enter your password. (Unlocking from lock screen works normally).${C_RESET}"
     echo -e "  ${C_YELLOW}─────────────────────────────────────────────────────────────────${C_RESET}"
-    read -rp " Enable Face Unlock for GDM login anyway? [y/N]: " gdm_ans
+    read -rp " Enable Argus for GDM login anyway? [y/N]: " gdm_ans
     gdm_ans="${gdm_ans:-N}"
     [[ "$gdm_ans" =~ ^[Yy]$ ]] && ENABLE_GDM="true"
 
@@ -282,17 +283,23 @@ mkdir -p "$INSTALL_PREFIX" "$CONFIG_DIR" "$FACES_DIR" "$MODELS_DIR"
 # SIMD build
 if command -v gcc >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/src/fast_simd.c" ]; then
     echo -e "  [*] Compiling native AVX2/FMA vector acceleration in C..."
-    gcc -O3 -mavx2 -mfma -shared -fPIC -o "$SCRIPT_DIR/faceunlock/libfaceunlock_simd.so" "$SCRIPT_DIR/src/fast_simd.c" 2>/dev/null || true
-    [ -f "$SCRIPT_DIR/faceunlock/libfaceunlock_simd.so" ] && echo -e "  ${C_GREEN}✔${C_RESET} Native C SIMD library compiled successfully"
+    gcc -O3 -mavx2 -mfma -shared -fPIC -o "$SCRIPT_DIR/argus/libargus_simd.so" "$SCRIPT_DIR/src/fast_simd.c" 2>/dev/null || true
+    [ -f "$SCRIPT_DIR/argus/libargus_simd.so" ] && echo -e "  ${C_GREEN}✔${C_RESET} Native C SIMD library compiled successfully"
 fi
 
+cp -rf "$SCRIPT_DIR/argus" "$INSTALL_PREFIX/"
 cp -rf "$SCRIPT_DIR/faceunlock" "$INSTALL_PREFIX/"
 cp -rf "$SCRIPT_DIR/pam" "$INSTALL_PREFIX/"
 [ -d "$SCRIPT_DIR/src" ] && cp -rf "$SCRIPT_DIR/src" "$INSTALL_PREFIX/"
 cp -rf "$SCRIPT_DIR/models/"* "$MODELS_DIR/"
 
+# Create backward-compatibility directory symlinks
+ln -sfn "$INSTALL_PREFIX" /opt/faceunlock
+ln -sfn "$CONFIG_DIR" /etc/faceunlock
+
+chmod 755 "$INSTALL_PREFIX/pam/pam_argus.py"
 chmod 755 "$INSTALL_PREFIX/pam/pam_faceunlock.py"
-[ -f "$INSTALL_PREFIX/faceunlock/libfaceunlock_simd.so" ] && chmod 755 "$INSTALL_PREFIX/faceunlock/libfaceunlock_simd.so"
+[ -f "$INSTALL_PREFIX/argus/libargus_simd.so" ] && chmod 755 "$INSTALL_PREFIX/argus/libargus_simd.so"
 
 # Setup virtual environment
 UV_BIN="$(command -v uv 2>/dev/null || true)"
@@ -308,6 +315,9 @@ elif [ -d "$SCRIPT_DIR/venv" ]; then
     echo -e "  [*] Synchronizing tested virtual environment..."
     rm -rf "$INSTALL_PREFIX/venv"
     cp -r "$SCRIPT_DIR/venv" "$INSTALL_PREFIX/"
+elif [ -d "/opt/faceunlock/venv" ]; then
+    echo -e "  [*] Re-using installed virtual environment..."
+    cp -r "/opt/faceunlock/venv" "$INSTALL_PREFIX/"
 fi
 
 # Ensure system-site-packages enabled
@@ -354,8 +364,8 @@ EOF
 chmod 644 "$CONFIG_DIR/config.ini"
 chmod 700 "$FACES_DIR"
 
-# Install /usr/local/bin/faceunlock wrapper
-cat <<EOF > "$BIN_DIR/faceunlock"
+# Install /usr/local/bin/argus and compatibility /usr/local/bin/faceunlock wrapper
+cat <<EOF > "$BIN_DIR/argus"
 #!/bin/bash
 BASE_DIR="$INSTALL_PREFIX"
 if [ -f "\$BASE_DIR/venv/bin/python" ]; then
@@ -363,13 +373,14 @@ if [ -f "\$BASE_DIR/venv/bin/python" ]; then
 else
     PYTHON_EXEC="python3"
 fi
-PYTHONPATH="\$BASE_DIR:\$PYTHONPATH" exec "\$PYTHON_EXEC" -m faceunlock.cli "\$@"
+PYTHONPATH="\$BASE_DIR:\$PYTHONPATH" exec "\$PYTHON_EXEC" -m argus.cli "\$@"
 EOF
-chmod +x "$BIN_DIR/faceunlock"
+chmod +x "$BIN_DIR/argus"
+ln -sfn "$BIN_DIR/argus" "$BIN_DIR/faceunlock"
 
 # Udev rule for camera
 if [ -d "/etc/udev/rules.d" ]; then
-    cat <<EOF > "/etc/udev/rules.d/99-faceunlock-camera.rules"
+    cat <<EOF > "/etc/udev/rules.d/99-argus-camera.rules"
 SUBSYSTEM=="video4linux", TAG+="uaccess", MODE="0660", GROUP="video"
 EOF
     udevadm control --reload-rules 2>/dev/null || true
@@ -377,27 +388,33 @@ EOF
 fi
 
 # SELinux policy installation on Fedora / RHEL
-if command -v semodule >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/selinux/faceunlock_gdm.pp" ]; then
-    echo -e "  [*] Installing SELinux policy module (faceunlock_gdm.pp)..."
-    semodule -i "$SCRIPT_DIR/selinux/faceunlock_gdm.pp" 2>/dev/null || true
+if command -v semodule >/dev/null 2>&1; then
+    if [ -f "$SCRIPT_DIR/selinux/argus_gdm.pp" ]; then
+        echo -e "  [*] Installing SELinux policy module (argus_gdm.pp)..."
+        semodule -i "$SCRIPT_DIR/selinux/argus_gdm.pp" 2>/dev/null || true
+    elif [ -f "$SCRIPT_DIR/selinux/faceunlock_gdm.pp" ]; then
+        semodule -i "$SCRIPT_DIR/selinux/faceunlock_gdm.pp" 2>/dev/null || true
+    fi
 fi
 
 # Sync PAM services
 PYTHON_CMD="$INSTALL_PREFIX/venv/bin/python"
-[ "$ENABLE_SUDO" = "true" ] && "$PYTHON_CMD" -m faceunlock.pam_integrator enable sudo >/dev/null 2>&1 || "$PYTHON_CMD" -m faceunlock.pam_integrator disable sudo >/dev/null 2>&1
-[ "$ENABLE_POLKIT" = "true" ] && "$PYTHON_CMD" -m faceunlock.pam_integrator enable polkit-1 >/dev/null 2>&1 || "$PYTHON_CMD" -m faceunlock.pam_integrator disable polkit-1 >/dev/null 2>&1
-[ "$ENABLE_LOGIN" = "true" ] && "$PYTHON_CMD" -m faceunlock.pam_integrator enable login >/dev/null 2>&1 || "$PYTHON_CMD" -m faceunlock.pam_integrator disable login >/dev/null 2>&1
-[ "$ENABLE_GDM" = "true" ] && "$PYTHON_CMD" -m faceunlock.pam_integrator enable gdm-password >/dev/null 2>&1 || "$PYTHON_CMD" -m faceunlock.pam_integrator disable gdm-password >/dev/null 2>&1
+[ "$ENABLE_SUDO" = "true" ] && "$PYTHON_CMD" -m argus.pam_integrator enable sudo >/dev/null 2>&1 || "$PYTHON_CMD" -m argus.pam_integrator disable sudo >/dev/null 2>&1
+[ "$ENABLE_POLKIT" = "true" ] && "$PYTHON_CMD" -m argus.pam_integrator enable polkit-1 >/dev/null 2>&1 || "$PYTHON_CMD" -m argus.pam_integrator disable polkit-1 >/dev/null 2>&1
+[ "$ENABLE_LOGIN" = "true" ] && "$PYTHON_CMD" -m argus.pam_integrator enable login >/dev/null 2>&1 || "$PYTHON_CMD" -m argus.pam_integrator disable login >/dev/null 2>&1
+[ "$ENABLE_GDM" = "true" ] && "$PYTHON_CMD" -m argus.pam_integrator enable gdm-password >/dev/null 2>&1 || "$PYTHON_CMD" -m argus.pam_integrator disable gdm-password >/dev/null 2>&1
 
 # Sync existing enrolled user faces if present
-if [ -d "$TARGET_HOME/.config/faceunlock/faces" ]; then
-    cp -f "$TARGET_HOME/.config/faceunlock/faces/"*.vault "$FACES_DIR/" 2>/dev/null || true
-    cp -f "$TARGET_HOME/.config/faceunlock/faces/"*.json "$FACES_DIR/" 2>/dev/null || true
-    cp -f "$TARGET_HOME/.config/faceunlock/faces/.vault_secret" "$FACES_DIR/" 2>/dev/null || true
-    chmod 600 "$FACES_DIR/"* "$FACES_DIR/.vault_secret" 2>/dev/null || true
-fi
+for legacy_src in "$TARGET_HOME/.config/argus/faces" "$TARGET_HOME/.config/faceunlock/faces" "/etc/faceunlock/faces"; do
+    if [ -d "$legacy_src" ] && [ "$legacy_src" != "$FACES_DIR" ]; then
+        cp -f "$legacy_src/"*.vault "$FACES_DIR/" 2>/dev/null || true
+        cp -f "$legacy_src/"*.json "$FACES_DIR/" 2>/dev/null || true
+        cp -f "$legacy_src/.vault_secret" "$FACES_DIR/" 2>/dev/null || true
+        chmod 600 "$FACES_DIR/"* "$FACES_DIR/.vault_secret" 2>/dev/null || true
+    fi
+done
 
-echo -e "  ${C_GREEN}✔${C_RESET} Package successfully installed into /opt/faceunlock"
+echo -e "  ${C_GREEN}✔${C_RESET} Package successfully installed into /opt/argus"
 
 # -----------------------------------------------------------------
 # Step 6: Guided Face Registration & Verification
@@ -408,30 +425,30 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     add_ans="${add_ans:-Y}"
     if [[ "$add_ans" =~ ^[Yy]$ ]]; then
         echo ""
-        "$BIN_DIR/faceunlock" add "$TARGET_USER" || true
+        "$BIN_DIR/argus" add "$TARGET_USER" || true
 
         # Sync vault to user home
-        mkdir -p "$TARGET_HOME/.config/faceunlock/faces"
-        cp -f "$FACES_DIR/$TARGET_USER.vault" "$TARGET_HOME/.config/faceunlock/faces/" 2>/dev/null || true
-        cp -f "$FACES_DIR/.vault_secret" "$TARGET_HOME/.config/faceunlock/faces/" 2>/dev/null || true
-        chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config/faceunlock" 2>/dev/null || true
+        mkdir -p "$TARGET_HOME/.config/argus/faces"
+        cp -f "$FACES_DIR/$TARGET_USER.vault" "$TARGET_HOME/.config/argus/faces/" 2>/dev/null || true
+        cp -f "$FACES_DIR/.vault_secret" "$TARGET_HOME/.config/argus/faces/" 2>/dev/null || true
+        chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config/argus" 2>/dev/null || true
 
         echo ""
         read -rp "Test live camera verification preview now? [Y/n]: " test_ans
         test_ans="${test_ans:-Y}"
         if [[ "$test_ans" =~ ^[Yy]$ ]]; then
             echo ""
-            "$BIN_DIR/faceunlock" test "$TARGET_USER" || true
+            "$BIN_DIR/argus" test "$TARGET_USER" || true
         fi
     fi
 fi
 
 echo -e "\n${C_GREEN}╭──────────────────────────────────────────────────────────╮${C_RESET}"
-echo -e "${C_GREEN}│${C_RESET} ${C_BOLD}Installation Successful! Linux Face Unlock is Ready.${C_RESET}   ${C_GREEN}│${C_RESET}"
+echo -e "${C_GREEN}│${C_RESET} ${C_BOLD}Installation Successful! Argus is Ready.${C_RESET}                 ${C_GREEN}│${C_RESET}"
 echo -e "${C_GREEN}╰──────────────────────────────────────────────────────────╯${C_RESET}"
 echo -e " Available Commands:"
-echo -e "  • ${C_CYAN}sudo faceunlock config${C_RESET}  - Interactive toggle menu for PAM, feedback, timeouts & security"
-echo -e "  • ${C_CYAN}sudo faceunlock add${C_RESET}     - Register face model with iOS-like guided animation"
-echo -e "  • ${C_CYAN}sudo faceunlock test${C_RESET}    - Open camera window & display live face verification"
-echo -e "  • ${C_CYAN}faceunlock status${C_RESET}       - View system status, hardware diagnostics & active PAM services"
-echo -e "  • ${C_CYAN}sudo true${C_RESET}               - Test instant biometric authentication on terminal\n"
+echo -e "  • ${C_CYAN}sudo argus config${C_RESET}  - Interactive toggle menu for PAM, feedback, timeouts & security"
+echo -e "  • ${C_CYAN}sudo argus add${C_RESET}     - Register face model with iOS-like guided animation"
+echo -e "  • ${C_CYAN}sudo argus test${C_RESET}    - Open camera window & display live face verification"
+echo -e "  • ${C_CYAN}argus status${C_RESET}       - View system status, hardware diagnostics & active PAM services"
+echo -e "  • ${C_CYAN}sudo true${C_RESET}          - Test instant biometric authentication on terminal\n"

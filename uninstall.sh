@@ -1,25 +1,24 @@
 #!/bin/bash
-# Uninstaller for Linux Face Unlock
+# Uninstaller for Argus
 set -euo pipefail
 
-INSTALL_PREFIX="/opt/faceunlock"
+INSTALL_PREFIX="/opt/argus"
 BIN_DIR="/usr/local/bin"
-CONFIG_DIR="/etc/faceunlock"
-USER_BIN="$HOME/.local/bin/faceunlock"
-USER_CONFIG="$HOME/.config/faceunlock"
+CONFIG_DIR="/etc/argus"
 
-echo "Uninstalling Linux Face Unlock..."
+echo "Uninstalling Argus..."
 
 if [ "$(id -u)" -eq 0 ]; then
-    if [ -f "/etc/pam.d/sudo" ]; then
-        echo "[*] Removing Face Unlock from /etc/pam.d/sudo..."
-        sed -i '/pam_faceunlock.py/d' /etc/pam.d/sudo
-    fi
-    rm -rf "$INSTALL_PREFIX"
-    rm -f "$BIN_DIR/faceunlock"
-    rm -f "/etc/udev/rules.d/99-faceunlock-camera.rules"
-    echo "[!] Preserving $CONFIG_DIR (remove manually if desired: rm -rf $CONFIG_DIR)"
+    for f in /etc/pam.d/*; do
+        if [ -f "$f" ]; then
+            sed -i '/pam_argus.py/d' "$f" 2>/dev/null || true
+            sed -i '/pam_faceunlock.py/d' "$f" 2>/dev/null || true
+        fi
+    done
+    rm -rf "$INSTALL_PREFIX" /opt/faceunlock
+    rm -f "$BIN_DIR/argus" "$BIN_DIR/faceunlock"
+    rm -f "/etc/udev/rules.d/99-argus-camera.rules" "/etc/udev/rules.d/99-faceunlock-camera.rules"
+    echo "[!] Preserving $CONFIG_DIR and /etc/faceunlock (remove manually if desired: rm -rf $CONFIG_DIR)"
 fi
 
-rm -f "$USER_BIN"
-echo "[✓] Face Unlock successfully uninstalled."
+echo "[✓] Argus successfully uninstalled."

@@ -1,13 +1,24 @@
-"""Linux Face Unlock - Universal, High-Security Biometric Authentication for Linux.
+import sys
+import argus
+import argus.cli
+import argus.config
+import argus.crypto
+import argus.engine
+import argus.gui_enroll
+import argus.gui_test
+import argus.hardware
+import argus.liveness
+import argus.pam_handler
+import argus.pam_integrator
+import argus.simd_accel
+import argus.simultaneous_biometrics
+import argus.tpm
+import argus.ui
 
-Supports Depth, Infrared (IR) with Windows Hello emitter controls,
-and seamless fallback to standard RGB webcams with multi-modal anti-spoofing liveness detection.
-"""
-
-import os
-
-# Quiet internal OpenCV DNN graph engine warnings on OpenCV >= 4.11
-os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
-
-__version__ = "1.0.0"
-__author__ = "Linux Face Unlock Project"
+sys.modules["faceunlock"] = argus
+for _sub in [
+    "cli", "config", "crypto", "engine", "gui_enroll", "gui_test",
+    "hardware", "liveness", "pam_handler", "pam_integrator",
+    "simd_accel", "simultaneous_biometrics", "tpm", "ui"
+]:
+    sys.modules[f"faceunlock.{_sub}"] = getattr(argus, _sub)

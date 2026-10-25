@@ -1,0 +1,21 @@
+#!/bin/bash
+# Wrapper script to execute Argus CLI
+if [ -d "/opt/argus/argus" ]; then
+    BASE_DIR="/opt/argus"
+elif [ -d "/opt/faceunlock/argus" ]; then
+    BASE_DIR="/opt/faceunlock"
+else
+    BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
+
+if [ -f "$BASE_DIR/venv/bin/python" ]; then
+    PYTHON_EXEC="$BASE_DIR/venv/bin/python"
+elif [ -f "/opt/argus/venv/bin/python" ]; then
+    PYTHON_EXEC="/opt/argus/venv/bin/python"
+elif [ -f "/opt/faceunlock/venv/bin/python" ]; then
+    PYTHON_EXEC="/opt/faceunlock/venv/bin/python"
+else
+    PYTHON_EXEC="python3"
+fi
+
+PYTHONPATH="$BASE_DIR:$PYTHONPATH" exec "$PYTHON_EXEC" -m argus.cli "$@"

@@ -3,19 +3,20 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "linux-face-unlock"
+name = "argus"
 version = "1.0.0"
-description = "Universal, High-Security Face Unlock Biometrics for Linux"
+description = "Argus - Universal, High-Security Biometric Authentication for Linux"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.20",
-    "opencv-python-headless>=4.8",
+    "opencv-python>=4.8",
     "cryptography>=41.0",
 ]
 
 [project.scripts]
-faceunlock = "faceunlock.cli:main"
+argus = "argus.cli:main"
+faceunlock = "argus.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

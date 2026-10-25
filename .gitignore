@@ -6,3 +6,4 @@ faces/
 *.egg-info/
 dist/
 build/
+*.mod
