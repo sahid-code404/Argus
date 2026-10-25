@@ -112,7 +112,7 @@ The interactive installer will:
 
 ---
 
-### 2. Enroll Your Face (`sudo argus add`)
+### 2. Enroll Biometric Face Models (`sudo argus add`)
 
 Launch the iOS-style guided visual enrollment interface:
 
@@ -120,13 +120,44 @@ Launch the iOS-style guided visual enrollment interface:
 sudo argus add
 ```
 
-- Guides you to tilt your head slightly left, right, up, and down.
-- Captures multiple high-quality embedding vectors.
-- AES-256-GCM encrypts your biometric vault with cryptographic checksums and hardware binding.
+- **Auto-Indexed Models**: Automatically indexes new models (`#1 Face1`, `#2 Face2`, etc.) or lets you specify custom names (e.g. `Mom`, `Friend`, `Work`).
+- **Multi-Model Support**: Enroll multiple models under one user account so family members or trusted companions can unlock the workstation.
+- **Duplicate Face Prevention**: Prevents enrolling the same person multiple times under different names or user accounts.
+- **Anti-Spoofing Protection**: Neural and physics-based liveness verification immediately rejects photos, screens, printed pictures, and video replays during enrollment.
 
 ---
 
-### 3. Test Live Verification (`sudo argus test`)
+### 3. List Registered Models (`sudo argus list face`)
+
+Display a clean tabular summary of all enrolled face models, sample counts, camera sensors, and enrollment timestamps:
+
+```bash
+sudo argus list face
+# Or filter by user:
+sudo argus list face shaque
+```
+
+---
+
+### 4. Remove Face Models (`sudo argus remove facemodel <name>`)
+
+Remove a specific biometric model by name or ID without deleting other enrolled faces:
+
+```bash
+# Remove by model name:
+sudo argus remove facemodel Face2
+sudo argus remove facemodel Mom
+
+# Remove by model ID:
+sudo argus remove facemodel 1
+
+# Or run interactively with a numbered selection menu:
+sudo argus remove
+```
+
+---
+
+### 5. Test Live Verification (`sudo argus test`)
 
 Open the live verification testing window to inspect real-time detection, liveness scores, and cosine matching:
 
@@ -138,7 +169,7 @@ Press `q` or `ESC` to close the test preview.
 
 ---
 
-### 4. Interactive Configuration (`sudo argus config`)
+### 6. Interactive Configuration (`sudo argus config`)
 
 Customize Argus settings anytime through an interactive terminal panel:
 
@@ -153,7 +184,7 @@ sudo argus config
 
 ---
 
-### 5. Check System Status (`argus status`)
+### 7. Check System Status (`argus status`)
 
 View overall diagnostic health, active security profiles, camera selection, and configured PAM endpoints:
 

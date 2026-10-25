@@ -182,8 +182,8 @@ class LivenessDetector:
         out = self.neural_net.forward()
         logits = out[0]
 
-        real_logit = float(logits[0])
-        spoof_logit = float(logits[1])
+        real_logit = float(logits[1])
+        spoof_logit = float(logits[0])
         logit_diff = real_logit - spoof_logit
 
         # Sigmoid probability

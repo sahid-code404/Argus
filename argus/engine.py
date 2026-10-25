@@ -122,6 +122,7 @@ class FaceEngine:
             min_liveness_threshold=min_liveness_threshold,
         )
         self._last_input_size = (320, 320)
+        self._user_embeddings_cache: dict = {}
 
         self._init_models()
 
@@ -205,6 +206,32 @@ class FaceEngine:
         """Compute cosine similarity between two feature embeddings using SIMD vector dot product."""
         return native_cosine_similarity(feat1, feat2)
 
+    def find_best_match(
+        self,
+        live_feature: np.ndarray,
+        enrolled_vectors: List[np.ndarray],
+        user: Optional[str] = None,
+    ) -> Tuple[float, int, List[float]]:
+        """Calculate best match score and similarities against enrolled vectors.
+
+        Supports both projected (hardware-vault) and unprojected embeddings using SIMD.
+        """
+        if not enrolled_vectors:
+            return 0.0, -1, []
+
+        enrolled_matrix = np.vstack(enrolled_vectors)
+        if user:
+            live_feat = project_embedding(live_feature, user)
+        else:
+            live_feat = live_feature.copy()
+            norm = np.linalg.norm(live_feat)
+            if norm > 1e-6:
+                live_feat /= norm
+
+        best_idx, max_sim = native_batch_match(enrolled_matrix, live_feat)
+        sim_scores = (enrolled_matrix @ live_feat.T).flatten()
+        return float(max_sim), int(best_idx), [float(s) for s in sim_scores]
+
     def _user_face_path(self, user: str) -> Path:
         """Locate user's biometric vault, checking user home first then data_dir."""
         safe_user = "".join(c for c in user if c.isalnum() or c in ("-", "_"))
@@ -248,36 +275,118 @@ class FaceEngine:
 
         for d in dirs_to_check:
             if d.exists():
-                for ext in ("*.vault", "*.json"):
-                    for p in d.glob(ext):
-                        users.add(p.stem)
+                try:
+                    for ext in ("*.vault", "*.json"):
+                        for p in d.glob(ext):
+                            users.add(p.stem)
+                except PermissionError:
+                    pass
         return sorted(users)
+
+    def check_duplicate_face(
+        self,
+        candidate_embeddings: List[np.ndarray],
+        user: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str], float]:
+        """Check if candidate embeddings already match an enrolled face model.
+
+        Prevents duplicate re-enrollment of the same person.
+        Returns: (is_duplicate: bool, matched_model_name: Optional[str], similarity: float)
+        """
+        if not candidate_embeddings:
+            return False, None, 0.0
+
+        candidates_to_test = list(candidate_embeddings)
+        mean_emb = np.mean(candidate_embeddings, axis=0)
+        norm = np.linalg.norm(mean_emb)
+        if norm > 1e-6:
+            candidates_to_test.append(mean_emb / norm)
+
+        # Determine users to check against
+        users_to_check = [user] if user else []
+        for u in self.get_enrolled_users():
+            if u not in users_to_check:
+                users_to_check.append(u)
+
+        for u in users_to_check:
+            enrolled_vectors = self.load_user_embeddings(u)
+            if not enrolled_vectors:
+                continue
+
+            models = self.list_user_models(u)
+
+            for cand in candidates_to_test:
+                best_score, best_idx, _ = self.find_best_match(cand, enrolled_vectors, user=u)
+
+                if best_score >= self.cosine_threshold:
+                    accum = 0
+                    matched_name = "Existing Model"
+                    for m in models:
+                        cnt = m.get("count", 5)
+                        if accum <= best_idx < accum + cnt:
+                            matched_name = m.get("name", "Existing Model")
+                            break
+                        accum += cnt
+                    if user and u != user:
+                        matched_name = f"{matched_name} (user: {u})"
+                    return True, matched_name, float(best_score)
+
+        return False, None, 0.0
+
+    def list_user_models(self, user: str) -> List[dict]:
+        """List all face models enrolled for user."""
+        path = self._user_face_path(user)
+        if not path.exists():
+            return []
+        return BiometricVault.list_models(user, path, use_tpm=self.use_tpm)
+
+    def remove_model(self, user: str, model_name_or_id: str) -> Tuple[bool, Optional[str]]:
+        """Remove a specific face model by name or ID from user vault."""
+        path = self._user_face_path(user)
+        if not path.exists():
+            return False, None
+        ok, removed_name = BiometricVault.remove_model_from_vault(
+            user=user,
+            vault_path=path,
+            model_name_or_id=model_name_or_id,
+            use_tpm=self.use_tpm,
+        )
+        if ok and user in self._user_embeddings_cache:
+            del self._user_embeddings_cache[user]
+        return ok, removed_name
 
     def enroll_user(
         self,
         user: str,
         embeddings: List[np.ndarray],
         camera_type: str = "rgb_webcam",
-        model_name: str = "#1 Default",
+        model_name: str = "Face1",
+        check_duplicate: bool = True,
     ) -> bool:
-        """Encrypt and save user's enrolled face embeddings into biometric vault."""
+        """Encrypt and save user's enrolled face embeddings into biometric vault with duplicate protection."""
         if not embeddings:
             return False
+
+        if check_duplicate:
+            is_dup, _, _ = self.check_duplicate_face(embeddings, user)
+            if is_dup:
+                return False
 
         safe_user = "".join(c for c in user if c.isalnum() or c in ("-", "_"))
         vault_path = self.data_dir / f"{safe_user}.vault"
 
-        success = BiometricVault.save_vault(
+        success, _ = BiometricVault.add_model_to_vault(
             user=user,
             embeddings=embeddings,
             vault_path=vault_path,
-            camera_type=camera_type,
-            model="sface_2021dec",
             model_name=model_name,
+            camera_type=camera_type,
             use_tpm=self.use_tpm,
         )
 
         if success:
+            if user in self._user_embeddings_cache:
+                del self._user_embeddings_cache[user]
             # Securely wipe legacy unencrypted .json if it existed
             legacy_json = self.data_dir / f"{safe_user}.json"
             if legacy_json.exists():
@@ -288,6 +397,8 @@ class FaceEngine:
     def remove_user(self, user: str) -> bool:
         """Securely wipe enrolled user biometric vault."""
         removed = False
+        if user in self._user_embeddings_cache:
+            del self._user_embeddings_cache[user]
         safe_user = "".join(c for c in user if c.isalnum() or c in ("-", "_"))
         for ext in (".vault", ".json"):
             p = self.data_dir / f"{safe_user}{ext}"
@@ -297,14 +408,25 @@ class FaceEngine:
         return removed
 
     def load_user_embeddings(self, user: str) -> List[np.ndarray]:
-        """Load enrolled embeddings for a user, auto-migrating and decrypting from vault."""
+        """Load enrolled embeddings for a user, using memory cache and auto-migrating."""
         path = self._user_face_path(user)
         if not path.exists():
             return []
 
+        try:
+            mtime = path.stat().st_mtime
+            if user in self._user_embeddings_cache:
+                cached_mtime, cached_vecs = self._user_embeddings_cache[user]
+                if cached_mtime == mtime:
+                    return cached_vecs
+        except Exception:
+            mtime = 0.0
+
         # If .vault: decrypt directly
         if path.suffix == ".vault":
             vectors, header = BiometricVault.load_vault(user, path, use_tpm=self.use_tpm)
+            if vectors:
+                self._user_embeddings_cache[user] = (mtime, vectors)
             return vectors
 
         # If legacy .json: load, migrate to .vault, and securely wipe legacy .json
@@ -333,6 +455,8 @@ class FaceEngine:
                     secure_wipe_file(path)
                     # Decrypt and return projected vectors
                     loaded, _ = BiometricVault.load_vault(user, vault_path, use_tpm=self.use_tpm)
+                    if loaded:
+                        self._user_embeddings_cache[user] = (mtime, loaded)
                     return loaded
             except Exception:
                 pass

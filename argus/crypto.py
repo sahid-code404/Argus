@@ -279,3 +279,214 @@ class BiometricVault:
 
         except Exception as e:
             return [], {"error": f"decryption_failed_{type(e).__name__}"}
+
+    @staticmethod
+    def list_models(user: str, vault_path: Path, use_tpm: bool = False) -> List[Dict]:
+        """List all enrolled face models in the user vault."""
+        if not vault_path.exists():
+            return []
+        vectors, header = BiometricVault.load_vault(user, vault_path, use_tpm=use_tpm)
+        if not header:
+            return []
+        models = header.get("models")
+        if not models and vectors:
+            models = [{
+                "id": 1,
+                "name": header.get("model_name", "Face1"),
+                "created_at": header.get("created_at", "Earlier"),
+                "camera_type": header.get("camera_type", "rgb_webcam"),
+                "count": header.get("count", len(vectors)),
+            }]
+        return models or []
+
+    @staticmethod
+    def add_model_to_vault(
+        user: str,
+        embeddings: List[np.ndarray],
+        vault_path: Path,
+        model_name: str = "Face1",
+        camera_type: str = "rgb_webcam",
+        use_tpm: bool = False,
+    ) -> Tuple[bool, Dict]:
+        """Add an additional face model (e.g. self, friend, family) to an existing or new vault."""
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        existing_vectors: List[np.ndarray] = []
+        existing_models: List[Dict] = []
+        if vault_path.exists():
+            vectors, header = BiometricVault.load_vault(user, vault_path, use_tpm=use_tpm)
+            if vectors and header:
+                existing_vectors = vectors
+                existing_models = header.get("models", [])
+                if not existing_models:
+                    existing_models = [{
+                        "id": 1,
+                        "name": header.get("model_name", "Face1"),
+                        "created_at": header.get("created_at", "Earlier"),
+                        "camera_type": header.get("camera_type", "rgb_webcam"),
+                        "count": len(existing_vectors),
+                    }]
+
+        next_id = max([m.get("id", 0) for m in existing_models] or [0]) + 1
+        new_model_info = {
+            "id": next_id,
+            "name": model_name[:24],
+            "created_at": now_str,
+            "camera_type": camera_type,
+            "count": len(embeddings),
+        }
+
+        # Project new embeddings into user's orthonormal feature space
+        new_protected = [project_embedding(emb, user).flatten() for emb in embeddings]
+        all_protected = [v.flatten() for v in existing_vectors] + new_protected
+
+        all_models = existing_models + [new_model_info]
+
+        vault_path.parent.mkdir(parents=True, exist_ok=True)
+        data_dir = vault_path.parent
+
+        vectors_matrix = np.array(all_protected, dtype=np.float32)
+        raw_payload = vectors_matrix.tobytes()
+
+        kdf_salt = os.urandom(16)
+        key = derive_encryption_key(user, kdf_salt, data_dir, use_tpm=use_tpm)
+        nonce = os.urandom(12)
+        aesgcm = AESGCM(key)
+
+        hw_hash = hashlib.sha256(get_hardware_identity()).hexdigest()[:16]
+        header = {
+            "version": VAULT_VERSION,
+            "user": user,
+            "model": "sface_2021dec",
+            "model_name": all_models[0]["name"],
+            "models": all_models,
+            "camera_type": camera_type,
+            "count": len(all_protected),
+            "dim": 128,
+            "hw_fingerprint": hw_hash,
+        }
+        aad = json.dumps(header, sort_keys=True).encode("utf-8")
+        ciphertext = aesgcm.encrypt(nonce, raw_payload, aad)
+
+        vault_data = {
+            "header": header,
+            "kdf_salt": kdf_salt.hex(),
+            "nonce": nonce.hex(),
+            "ciphertext": ciphertext.hex(),
+        }
+
+        try:
+            fd = os.open(str(vault_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(vault_data, f, indent=2)
+            os.chmod(str(vault_path), 0o600)
+            return True, new_model_info
+        except Exception:
+            return False, {}
+
+    @staticmethod
+    def remove_model_from_vault(
+        user: str,
+        vault_path: Path,
+        model_name_or_id: str,
+        use_tpm: bool = False,
+    ) -> Tuple[bool, Optional[str]]:
+        """Remove a specific face model by name or ID from user's vault."""
+        if not vault_path.exists():
+            return False, None
+
+        vectors, header = BiometricVault.load_vault(user, vault_path, use_tpm=use_tpm)
+        if not vectors or not header:
+            return False, None
+
+        models = header.get("models")
+        if not models:
+            models = [{
+                "id": 1,
+                "name": header.get("model_name", "Face1"),
+                "created_at": header.get("created_at", "Earlier"),
+                "camera_type": header.get("camera_type", "rgb_webcam"),
+                "count": len(vectors),
+            }]
+
+        # Search for model to remove
+        target_idx = -1
+        target_model = None
+        raw_target_str = str(model_name_or_id).strip().lower()
+        target_str = raw_target_str.lstrip("#").strip()
+        for idx, m in enumerate(models):
+            m_id_str = str(m.get("id", "")).strip().lower().lstrip("#")
+            m_name_raw = str(m.get("name", "")).strip().lower()
+            m_name_clean = m_name_raw.lstrip("#").strip()
+            parts = m_name_clean.split(maxsplit=1)
+            friendly_part = parts[1].strip() if len(parts) > 1 else ""
+
+            if (
+                m_id_str == target_str
+                or m_name_raw == raw_target_str
+                or m_name_clean == target_str
+                or (friendly_part and friendly_part == target_str)
+            ):
+                target_idx = idx
+                target_model = m
+                break
+
+        if target_model is None:
+            return False, None
+
+        # Calculate vector slice
+        start_vec = 0
+        for i in range(target_idx):
+            start_vec += models[i].get("count", 5)
+        end_vec = start_vec + target_model.get("count", 5)
+
+        remaining_vectors = vectors[:start_vec] + vectors[end_vec:]
+        remaining_models = models[:target_idx] + models[target_idx + 1:]
+
+        if not remaining_models or not remaining_vectors:
+            # No models left: securely wipe file
+            secure_wipe_file(vault_path)
+            return True, target_model.get("name", "Model")
+
+        # Re-encrypt vault with remaining models
+        data_dir = vault_path.parent
+        all_protected = [v.flatten() for v in remaining_vectors]
+        vectors_matrix = np.array(all_protected, dtype=np.float32)
+        raw_payload = vectors_matrix.tobytes()
+
+        kdf_salt = os.urandom(16)
+        key = derive_encryption_key(user, kdf_salt, data_dir, use_tpm=use_tpm)
+        nonce = os.urandom(12)
+        aesgcm = AESGCM(key)
+
+        hw_hash = hashlib.sha256(get_hardware_identity()).hexdigest()[:16]
+        header = {
+            "version": VAULT_VERSION,
+            "user": user,
+            "model": "sface_2021dec",
+            "model_name": remaining_models[0].get("name", "Face1"),
+            "models": remaining_models,
+            "camera_type": remaining_models[0].get("camera_type", "rgb_webcam"),
+            "count": len(all_protected),
+            "dim": 128,
+            "hw_fingerprint": hw_hash,
+        }
+        aad = json.dumps(header, sort_keys=True).encode("utf-8")
+        ciphertext = aesgcm.encrypt(nonce, raw_payload, aad)
+
+        vault_data = {
+            "header": header,
+            "kdf_salt": kdf_salt.hex(),
+            "nonce": nonce.hex(),
+            "ciphertext": ciphertext.hex(),
+        }
+
+        try:
+            fd = os.open(str(vault_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(vault_data, f, indent=2)
+            os.chmod(str(vault_path), 0o600)
+            return True, target_model.get("name", "Model")
+        except Exception:
+            return False, None

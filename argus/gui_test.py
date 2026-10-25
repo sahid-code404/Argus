@@ -16,6 +16,7 @@ from typing import Optional
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb;wayland")
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.*=false;QFontDatabase=false;*.warning=false")
 
 import cv2
 import numpy as np
@@ -98,7 +99,7 @@ def run_gui_test(user: str, engine: FaceEngine, config: Optional[FaceUnlockConfi
                 # Feature matching
                 if is_enrolled and enrolled_embeddings:
                     emb = engine.extract_embedding(frame, face)
-                    match_score, _, _ = engine.find_best_match(emb, enrolled_embeddings)
+                    match_score, _, _ = engine.find_best_match(emb, enrolled_embeddings, user=user)
                     best_match_score = max(best_match_score, match_score)
                     if match_score >= cfg.cosine_threshold and liveness_res.is_live:
                         is_verified = True

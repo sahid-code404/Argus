@@ -95,32 +95,93 @@ def cmd_probe(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
 
 
 def cmd_list(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
-    """List enrolled users."""
+    """List enrolled biometric face models."""
     engine = FaceEngine(
         model_dir=cfg.models_dir or None,
         data_dir=cfg.data_dir or None,
+        use_tpm=cfg.use_tpm,
     )
-    users = engine.get_enrolled_users()
-    print("=" * 45)
-    print(" Argus - Enrolled Users")
-    print("=" * 45)
-    if not users:
-        print("No users currently enrolled. Use 'argus add' to register a face model.")
+
+    targets = getattr(args, "target", [])
+    if isinstance(targets, str):
+        targets = [targets]
+    elif targets is None:
+        targets = []
+
+    # Filter out descriptor tokens like 'face', 'faces', 'model', 'models'
+    filter_user = None
+    for t in targets:
+        clean = t.strip()
+        if clean.lower() not in ("face", "faces", "model", "models"):
+            filter_user = clean
+            break
+
+    enrolled_users = engine.get_enrolled_users()
+    if filter_user:
+        if filter_user in enrolled_users:
+            users_to_list = [filter_user]
+        else:
+            print(f"\033[93m[!] User '{filter_user}' has no enrolled face models.\033[0m")
+            return 0
     else:
-        for u in users:
-            vectors = engine.load_user_embeddings(u)
-            print(f" • \033[1m{u}\033[0m: {len(vectors)} biometric sample(s) registered")
-    print("=" * 45)
+        users_to_list = enrolled_users
+
+    total_models = 0
+    rows = []
+    for u in users_to_list:
+        models = engine.list_user_models(u)
+        if not models:
+            vecs = engine.load_user_embeddings(u)
+            if vecs:
+                models = [{
+                    "id": 1,
+                    "name": "Face1",
+                    "camera_type": "rgb_webcam",
+                    "count": len(vecs),
+                    "created_at": "Earlier",
+                }]
+
+        for m in models:
+            total_models += 1
+            rows.append({
+                "user": u,
+                "id": f"#{m.get('id', 1)}",
+                "name": str(m.get("name", "Face1"))[:20],
+                "samples": str(m.get("count", 5)),
+                "sensor": str(m.get("camera_type", "rgb_webcam"))[:14],
+                "date": str(m.get("created_at", "Earlier")),
+            })
+
+    print("=" * 96)
+    print("                    Argus - Registered Biometric Face Models")
+    print("=" * 96)
+
+    if not rows:
+        print(" No face models currently enrolled.")
+        print(" Use 'sudo argus add' to register a new face model.")
+        print("=" * 96)
+        return 0
+
+    header = f" {'User':<14} | {'ID':<6} | {'Model Name':<20} | {'Samples':<8} | {'Sensor':<14} | {'Registered Date (UTC)':<24}"
+    print(header)
+    print(" " + "-" * 14 + "-+-" + "-" * 6 + "-+-" + "-" * 20 + "-+-" + "-" * 8 + "-+-" + "-" * 14 + "-+-" + "-" * 24)
+
+    for r in rows:
+        print(f" {r['user']:<14} | {r['id']:<6} | {r['name']:<20} | {r['samples']:<8} | {r['sensor']:<14} | {r['date']:<24}")
+
+    print("=" * 96)
+    print(f" Total: {total_models} face model(s) enrolled across {len(users_to_list)} user(s).")
+    print("=" * 96)
     return 0
 
 
-def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
-    """Interactive enrollment wizard capturing varied angles."""
+def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig, model_name: str = "Face1") -> int:
+    """Interactive terminal enrollment wizard capturing varied angles."""
     enforce_sudo_privilege("enroll")
-    user = args.user or os.environ.get("SUDO_USER") or os.environ.get("USER") or "user"
-    target_samples = max(3, min(10, args.samples))
+    user = getattr(args, "user", None) or os.environ.get("SUDO_USER") or os.environ.get("USER") or "user"
+    target_samples = max(3, min(10, getattr(args, "samples", 5)))
 
-    render_banner("BIOMETRIC FACE ENROLLMENT", f"Registering {target_samples} samples for '{user}'")
+    render_banner("BIOMETRIC FACE ENROLLMENT", f"Registering {target_samples} samples for '{user}' (Model: {model_name})")
     print("\033[1mInstructions:\033[0m")
     print(f" We will capture {target_samples} face samples under varied head angles.")
     print(" Please follow each prompt on screen.")
@@ -129,6 +190,7 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     engine = FaceEngine(
         model_dir=cfg.models_dir or None,
         data_dir=cfg.data_dir or None,
+        use_tpm=cfg.use_tpm,
     )
 
     selected_cam, reason = select_camera(None if cfg.camera_device == "auto" else cfg.camera_device)
@@ -184,19 +246,35 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
                 print("\033[93m[!] Face not clear enough. Retrying...\033[0m")
                 continue
 
-            # Check liveness
+            # Anti-spoofing check: prohibit screens, photos, videos
             liveness = engine.liveness_detector.evaluate_frame(
                 frame, primary_face, is_ir_mode=(selected_cam.camera_type == CameraType.INFRARED)
             )
+            if not liveness.is_live:
+                print(f"\033[91m[!] Spoof detected ({liveness.verdict})! Screen / photo / video attack rejected.\033[0m")
+                continue
 
             feat = engine.extract_embedding(frame, primary_face)
             embeddings.append(feat)
             sample_idx += 1
             print(f"\033[1;32m✔ Sample {sample_idx}/{target_samples} encrypted and registered!\033[0m")
 
-        success = engine.enroll_user(user, embeddings, camera_type=selected_cam.camera_type.value)
+        # Duplicate face check
+        is_dup, dup_model, dup_sim = engine.check_duplicate_face(embeddings, user=user)
+        if is_dup:
+            print(f"\n\033[91m[!] Duplicate face rejected: This face is already enrolled as '{dup_model}' (similarity: {dup_sim:.3f}).\033[0m")
+            print("\033[91m[!] Argus prevents enrolling the same face multiple times.\033[0m\n")
+            return 1
+
+        success = engine.enroll_user(
+            user,
+            embeddings,
+            camera_type=selected_cam.camera_type.value,
+            model_name=model_name,
+            check_duplicate=False,
+        )
         if success:
-            render_banner("ENROLLMENT COMPLETE", f"User '{user}' secured with {len(embeddings)} biometric vectors")
+            render_banner("ENROLLMENT COMPLETE", f"Face model '{model_name}' registered for '{user}'")
             print("Biometric vault encrypted with hardware-bound AES-256 + cancelable projection.")
             print("Test anytime with: \033[1;36margus test\033[0m\n")
             return 0
@@ -296,28 +374,40 @@ def cmd_add(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     print("=" * 65)
     print(f"Adding face model for the current user ({user})")
 
-    default_name = "#1 Default"
-    try:
-        raw_name = input(f"Enter face model (model index number eg #1) name (max 24 characters) [{default_name}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print("\n\033[1;31m✗ Face enrollment failed or cancelled. Try again.\033[0m\n")
-        return 1
-
-    model_name = raw_name if raw_name else default_name
-    if len(model_name) > 24:
-        model_name = model_name[:24]
-        print(f"Notice: Model name truncated to 24 characters: '{model_name}'")
-
     engine = FaceEngine(
         model_dir=cfg.models_dir or None,
         data_dir=cfg.data_dir or None,
         use_tpm=cfg.use_tpm,
     )
 
+    existing_models = engine.list_user_models(user)
+    next_id = max([m.get("id", 0) for m in existing_models] or [0]) + 1
+    auto_default_name = f"Face{next_id}"
+
+    try:
+        raw_name = input(
+            f"Enter face model (model index #{next_id}) name (max 24 characters) [#{next_id} {auto_default_name}]: "
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\n\033[1;31m✗ Face enrollment failed or cancelled. Try again.\033[0m")
+        print("Try running: sudo argus add\n")
+        return 1
+
+    model_name = raw_name if raw_name else auto_default_name
+    # Strip leading "#<id> " if user entered or copied that format
+    if model_name.startswith(f"#{next_id} "):
+        model_name = model_name[len(f"#{next_id} "):].strip()
+    elif model_name.startswith(f"#{next_id}"):
+        model_name = model_name[len(f"#{next_id}"):].strip() or auto_default_name
+
+    if len(model_name) > 24:
+        model_name = model_name[:24]
+        print(f"Notice: Model name truncated to 24 characters: '{model_name}'")
+
     has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
     if not has_display:
         print("\033[93m[!] No graphical display detected. Falling back to terminal enrollment wizard...\033[0m\n")
-        return cmd_enroll(args, cfg)
+        return cmd_enroll(args, cfg, model_name=model_name)
 
     try:
         from argus.gui_enroll import run_gui_enrollment
@@ -327,12 +417,13 @@ def cmd_add(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
             print(f"\n\033[1;32m✔ Face model '{model_name}' successfully enrolled and encrypted for user '{user}'.\033[0m\n")
             return 0
         else:
-            print(f"\n\033[1;31m✗ Face enrollment failed or cancelled. Try again.\033[0m\n")
+            print(f"\n\033[1;31m✗ Face enrollment failed or cancelled. Try again.\033[0m")
+            print("Try running: sudo argus add\n")
             return 1
     except Exception as e:
         sys.stderr.write(f"\033[91m[!] Graphical enrollment error: {e}\033[0m\n")
         print("Falling back to terminal enrollment wizard...\n")
-        return cmd_enroll(args, cfg)
+        return cmd_enroll(args, cfg, model_name=model_name)
 
 
 def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
@@ -367,15 +458,137 @@ def cmd_test(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
 
 
 def cmd_remove(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
-    """Remove enrolled user."""
+    """Remove enrolled face model or user."""
     enforce_sudo_privilege("remove")
-    engine = FaceEngine(data_dir=cfg.data_dir or None)
-    if engine.remove_user(args.user):
-        print(f"\033[1;32m✔ Enrolled data for user '{args.user}' removed successfully.\033[0m")
+    engine = FaceEngine(
+        model_dir=cfg.models_dir or None,
+        data_dir=cfg.data_dir or None,
+        use_tpm=cfg.use_tpm,
+    )
+
+    targets = getattr(args, "target", [])
+    if isinstance(targets, str):
+        targets = [targets]
+    elif targets is None:
+        targets = []
+
+    # Strip descriptor prefixes like 'facemodel', 'face', 'model', 'facemodels', 'models'
+    tokens = []
+    for t in targets:
+        clean = t.strip()
+        if not tokens and clean.lower() in ("facemodel", "face", "model", "facemodels", "models"):
+            continue
+        if clean:
+            tokens.append(clean)
+
+    enrolled_users = engine.get_enrolled_users()
+
+    # Case 1: Interactive mode if no target provided
+    if not tokens:
+        all_models_flat = []
+        for u in enrolled_users:
+            for m in engine.list_user_models(u):
+                all_models_flat.append((u, m))
+
+        if not all_models_flat and not enrolled_users:
+            print("\033[93m[!] No enrolled face models found to remove.\033[0m")
+            return 0
+
+        print("=" * 65)
+        print("          Argus - Remove Enrolled Face Model")
+        print("=" * 65)
+        print("Select a face model to remove:\n")
+        idx_map = {}
+        counter = 1
+        for u, m in all_models_flat:
+            print(f"  [{counter}] {u} - #{m.get('id', 1)} '{m.get('name', 'Face1')}' ({m.get('count', 5)} samples, {m.get('created_at', 'Registered')})")
+            idx_map[str(counter)] = (u, m)
+            counter += 1
+
+        print("  [A] Remove ALL biometric data for current user")
+        print("  [Q] Cancel / Quit")
+        print("-" * 65)
+
+        try:
+            choice = input(f"Enter selection [1-{len(all_models_flat)}, A, Q]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return 0
+
+        if not choice or choice.lower() in ("q", "quit", "exit"):
+            print("Operation cancelled.")
+            return 0
+
+        if choice.lower() == "a":
+            target_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or (enrolled_users[0] if enrolled_users else "user")
+            if engine.remove_user(target_user):
+                print(f"\033[1;32m✔ All enrolled data for user '{target_user}' removed successfully.\033[0m")
+                return 0
+            else:
+                print(f"\033[93m[!] No data found for user '{target_user}'.\033[0m")
+                return 1
+
+        if choice in idx_map:
+            u, m = idx_map[choice]
+            ok, removed_name = engine.remove_model(u, str(m.get("id")))
+            if ok:
+                print(f"\033[1;32m✔ Successfully removed face model '{removed_name}' for user '{u}'.\033[0m")
+                return 0
+            else:
+                print(f"\033[91m[!] Failed to remove model '{m.get('name')}'.\033[0m")
+                return 1
+        else:
+            print("\033[91m[!] Invalid selection.\033[0m")
+            return 1
+
+    # Case 2: Target argument provided (e.g. "facemodel Face1", "Face1", "1", "#1", "shaque")
+    target_str = " ".join(tokens).strip()
+
+    # Check if target is a user directly
+    if target_str in enrolled_users:
+        if engine.remove_user(target_str):
+            print(f"\033[1;32m✔ All enrolled biometric data for user '{target_str}' removed successfully.\033[0m")
+            return 0
+
+    # Search for model by ID or name across enrolled users
+    current_user = os.environ.get("SUDO_USER") or os.environ.get("USER")
+    users_priority = []
+    if current_user and current_user in enrolled_users:
+        users_priority.append(current_user)
+    for u in enrolled_users:
+        if u not in users_priority:
+            users_priority.append(u)
+
+    for u in users_priority:
+        models = engine.list_user_models(u)
+        for m in models:
+            m_id = str(m.get("id", ""))
+            m_name = str(m.get("name", ""))
+            m_id_clean = m_id.lstrip("#").strip().lower()
+            target_clean = target_str.lstrip("#").strip().lower()
+
+            if (
+                m_id == target_str
+                or m_id_clean == target_clean
+                or m_name.lower() == target_str.lower()
+                or m_name.lower().lstrip("#").strip() == target_clean
+            ):
+                ok, removed_name = engine.remove_model(u, m_id)
+                if ok:
+                    print(f"\033[1;32m✔ Successfully removed face model '{removed_name}' (#{m_id}) for user '{u}'.\033[0m")
+                    remaining = engine.list_user_models(u)
+                    if not remaining:
+                        print(f"Notice: No face models remain for user '{u}'. Biometric vault cleared.")
+                    return 0
+
+    # Fallback: check if target_str was a user with unmigrated data
+    if engine.remove_user(target_str):
+        print(f"\033[1;32m✔ Enrolled data for user '{target_str}' removed successfully.\033[0m")
         return 0
-    else:
-        print(f"\033[1;33m✗ User '{args.user}' was not enrolled.\033[0m")
-        return 1
+
+    print(f"\033[91m[!] No face model or user found matching '{target_str}'.\033[0m")
+    print("Use 'sudo argus list face' to view all registered biometric models.")
+    return 1
 
 
 def cmd_status(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
@@ -780,7 +993,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_probe.add_argument("-a", "--all", action="store_true", help="Include non-capture/metadata nodes")
 
     # list
-    subparsers.add_parser("list", help="List enrolled users")
+    p_list = subparsers.add_parser("list", aliases=["list-face", "list-faces"], help="List enrolled biometric face models")
+    p_list.add_argument("target", nargs="*", help="Optional filter: 'face', 'models', or username")
 
     # add
     p_add = subparsers.add_parser("add", help="Register a new face model with iOS-like guided animation")
@@ -796,8 +1010,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_test.add_argument("user", nargs="?", help="Username (defaults to current user)")
 
     # remove
-    p_rem = subparsers.add_parser("remove", help="Remove enrolled user data")
-    p_rem.add_argument("user", help="Username to remove")
+    p_rem = subparsers.add_parser("remove", aliases=["rm", "remove-face"], help="Remove enrolled biometric face model or user")
+    p_rem.add_argument("target", nargs="*", help="Model name, index (#1), or username to remove")
 
     # status
     subparsers.add_parser("status", help="Show system status, TPM hardware state, and PAM services")
@@ -836,13 +1050,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_profile(args, cfg)
     elif args.command == "service":
         return cmd_service(args, cfg)
-    elif args.command == "list":
+    elif args.command in ("list", "list-face", "list-faces"):
         return cmd_list(args, cfg)
     elif args.command in ("add", "enroll"):
         return cmd_add(args, cfg)
     elif args.command == "test":
         return cmd_test(args, cfg)
-    elif args.command == "remove":
+    elif args.command in ("remove", "rm", "remove-face"):
         return cmd_remove(args, cfg)
     elif args.command == "config":
         return cmd_config(args, cfg)

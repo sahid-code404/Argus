@@ -18,6 +18,7 @@ from typing import List, Optional, Tuple
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 # Force Qt/Wayland compatibility under modern GNOME
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb;wayland")
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.*=false;QFontDatabase=false;*.warning=false")
 
 import cv2
 import numpy as np
@@ -79,6 +80,7 @@ def _draw_ios_reticle(
     total_ticks: int = 40,
     face_in_bounds: bool = False,
     is_success: bool = False,
+    is_spoof: bool = False,
 ) -> None:
     """Draw circular progress ticks and facial oval guide inspired by iOS Face ID."""
     overlay = img.copy()
@@ -103,7 +105,10 @@ def _draw_ios_reticle(
         p1 = (int(cx + r_inner * cos_a), int(cy + r_inner * sin_a))
         p2 = (int(cx + r_outer * cos_a), int(cy + r_outer * sin_a))
 
-        if is_success or i < completed_ticks:
+        if is_spoof:
+            color = (40, 40, 255)  # Alert Red
+            thickness = 2
+        elif is_success or i < completed_ticks:
             color = (50, 245, 90)  # Apple Neon Green
             thickness = 3
         else:
@@ -115,17 +120,26 @@ def _draw_ios_reticle(
     # 2. Central Oval Guidance
     oval_w = int(radius * 0.72)
     oval_h = int(radius * 0.95)
-    if is_success:
+    if is_spoof:
+        guide_color = (40, 40, 255)  # Alert Red
+    elif is_success:
         guide_color = (50, 245, 90)
     elif face_in_bounds:
         guide_color = (255, 220, 40)  # Cyan / Apple blue
     else:
         guide_color = (200, 200, 200)
 
-    cv2.ellipse(img, (cx, cy), (oval_w, oval_h), 0, 0, 360, guide_color, 2, cv2.LINE_AA)
+    cv2.ellipse(img, (cx, cy), (oval_w, oval_h), 0, 0, 360, guide_color, 2 if not is_spoof else 3, cv2.LINE_AA)
 
 
-def _draw_hud_banner(img: np.ndarray, top_text: str, sub_text: str, bottom_instruction: str, hint: str) -> None:
+def _draw_hud_banner(
+    img: np.ndarray,
+    top_text: str,
+    sub_text: str,
+    bottom_instruction: str,
+    hint: str,
+    is_spoof: bool = False,
+) -> None:
     """Draw sleek modern HUD banners for stage instructions and feedback."""
     h, w = img.shape[:2]
 
@@ -139,7 +153,8 @@ def _draw_hud_banner(img: np.ndarray, top_text: str, sub_text: str, bottom_instr
         rect = np.zeros_like(sub_top, dtype=np.uint8)
         cv2.rectangle(rect, (0, 0), (top_w, top_h), (25, 25, 25), -1)
         cv2.addWeighted(sub_top, 0.35, rect, 0.65, 0, sub_top)
-        cv2.rectangle(img, (tx1, ty1), (tx2, ty2), (70, 70, 70), 1, cv2.LINE_AA)
+        top_border_color = (50, 50, 220) if is_spoof else (70, 70, 70)
+        cv2.rectangle(img, (tx1, ty1), (tx2, ty2), top_border_color, 1, cv2.LINE_AA)
 
     cv2.putText(img, top_text, (tx1 + 20, ty1 + 26), cv2.FONT_HERSHEY_DUPLEX, 0.60, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.putText(img, sub_text, (tx1 + 20, ty1 + 48), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (170, 220, 255), 1, cv2.LINE_AA)
@@ -152,12 +167,16 @@ def _draw_hud_banner(img: np.ndarray, top_text: str, sub_text: str, bottom_instr
     sub_bot = img[by1:by2, bx1:bx2]
     if sub_bot.shape[0] == bot_h and sub_bot.shape[1] == bot_w:
         rect = np.zeros_like(sub_bot, dtype=np.uint8)
-        cv2.rectangle(rect, (0, 0), (bot_w, bot_h), (20, 20, 20), -1)
+        bg_col = (15, 15, 45) if is_spoof else (20, 20, 20)
+        cv2.rectangle(rect, (0, 0), (bot_w, bot_h), bg_col, -1)
         cv2.addWeighted(sub_bot, 0.35, rect, 0.65, 0, sub_bot)
-        cv2.rectangle(img, (bx1, by1), (bx2, by2), (60, 60, 60), 1, cv2.LINE_AA)
+        bot_border_color = (40, 40, 255) if is_spoof else (60, 60, 60)
+        cv2.rectangle(img, (bx1, by1), (bx2, by2), bot_border_color, 1 if not is_spoof else 2, cv2.LINE_AA)
 
-    cv2.putText(img, bottom_instruction, (bx1 + 25, by1 + 30), cv2.FONT_HERSHEY_DUPLEX, 0.65, (50, 255, 120), 1, cv2.LINE_AA)
-    cv2.putText(img, hint, (bx1 + 25, by1 + 54), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (200, 200, 200), 1, cv2.LINE_AA)
+    instr_color = (40, 40, 255) if is_spoof else (50, 255, 120)
+    hint_color = (180, 180, 255) if is_spoof else (200, 200, 200)
+    cv2.putText(img, bottom_instruction, (bx1 + 25, by1 + 30), cv2.FONT_HERSHEY_DUPLEX, 0.65, instr_color, 1, cv2.LINE_AA)
+    cv2.putText(img, hint, (bx1 + 25, by1 + 54), cv2.FONT_HERSHEY_SIMPLEX, 0.46, hint_color, 1, cv2.LINE_AA)
 
 
 def run_gui_enrollment(
@@ -243,35 +262,56 @@ def run_gui_enrollment(
             stage_info = ENROLL_STAGES[current_stage]
             bottom_instr = stage_info["label"]
             hint_str = stage_info["hint"]
+            is_spoof = False
 
             if not faces:
                 hint_str = "No face detected. Look directly at the screen."
             elif not face_in_bounds:
                 hint_str = "Center your face inside the circle."
             else:
-                stage_hold_frames += 1
-                if stage_hold_frames >= needed_hold_frames:
-                    # Extract high-accuracy normalized embedding
-                    emb = engine.extract_embedding(frame, best_face)
-                    captured_embeddings.append(emb)
-
-                    current_stage += 1
-                    completed_ticks = min(total_ticks, current_stage * ticks_per_stage)
+                # Anti-spoofing check: prohibit screens, printed photos, replay video attacks
+                liveness_res = engine.liveness_detector.evaluate_frame(
+                    frame, best_face, is_ir_mode=False
+                )
+                if not liveness_res.is_live:
+                    is_spoof = True
                     stage_hold_frames = 0
+                    bottom_instr = "PRESENTATION ATTACK DETECTED"
+                    hint_str = f"Live face required! {liveness_res.verdict}"
+                else:
+                    stage_hold_frames += 1
+                    if stage_hold_frames >= needed_hold_frames:
+                        # Extract high-accuracy normalized embedding
+                        emb = engine.extract_embedding(frame, best_face)
+                        captured_embeddings.append(emb)
 
-                    if current_stage >= total_stages:
-                        completed_ticks = total_ticks
-                        success = True
-                        break
+                        current_stage += 1
+                        completed_ticks = min(total_ticks, current_stage * ticks_per_stage)
+                        stage_hold_frames = 0
+
+                        if current_stage >= total_stages:
+                            completed_ticks = total_ticks
+                            success = True
+                            break
 
             # Render reticle and overlays
-            _draw_ios_reticle(frame, cx, cy, reticle_radius, completed_ticks, total_ticks, face_in_bounds)
+            _draw_ios_reticle(
+                frame,
+                cx,
+                cy,
+                reticle_radius,
+                completed_ticks,
+                total_ticks,
+                face_in_bounds,
+                is_spoof=is_spoof,
+            )
             _draw_hud_banner(
                 frame,
                 top_text=f"Enrolling User: {user}",
                 sub_text=f"Model: {model_name[:24]} ({current_stage}/{total_stages} Complete)",
                 bottom_instruction=bottom_instr,
                 hint=hint_str,
+                is_spoof=is_spoof,
             )
 
             cv2.imshow(window_name, frame)
@@ -285,8 +325,34 @@ def run_gui_enrollment(
                 success = False
                 break
 
-        # If all 5 angles captured successfully, show completion splash for 1 second
+        # If all 5 angles captured successfully, check duplicate face
         if success and len(captured_embeddings) >= total_stages:
+            # Check for duplicate face across all models and users
+            is_dup, dup_model, dup_sim = engine.check_duplicate_face(captured_embeddings, user=user)
+            if is_dup:
+                sys.stderr.write(
+                    f"\n\033[91m[!] Duplicate face rejected: This face is already registered as '{dup_model}' (similarity: {dup_sim:.3f}).\033[0m\n"
+                    f"\033[91m[!] Argus prevents enrolling the same face multiple times.\033[0m\n\n"
+                )
+                # Show duplicate rejection splash in GUI window
+                for _ in range(40):
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        frame = cv2.flip(frame, 1)
+                        _draw_ios_reticle(frame, cx, cy, reticle_radius, total_ticks, total_ticks, is_spoof=True)
+                        _draw_hud_banner(
+                            frame,
+                            top_text="Biometric Registration Rejected",
+                            sub_text=f"Duplicate face detected (similarity: {dup_sim:.2f})",
+                            bottom_instruction="Duplicate Face Not Allowed",
+                            hint=f"Already enrolled as '{dup_model}'",
+                            is_spoof=True,
+                        )
+                        cv2.imshow(window_name, frame)
+                        cv2.waitKey(40)
+                return False
+
+            # If not duplicate, show success splash and enroll
             for _ in range(25):
                 ret, frame = cap.read()
                 if ret and frame is not None:
@@ -297,13 +363,19 @@ def run_gui_enrollment(
                         top_text="Biometric Registration Complete",
                         sub_text=f"Saved {len(captured_embeddings)} angles for '{user}'",
                         bottom_instruction="Success! Encrypting Vault...",
-                        hint="Face model registered and hardware-secured",
+                        hint=f"Face model '{model_name}' hardware-secured",
                     )
                     cv2.imshow(window_name, frame)
                     cv2.waitKey(40)
 
             # Save embeddings to encrypted biometric vault
-            saved = engine.enroll_user(user, captured_embeddings, camera_type="rgb_webcam", model_name=model_name)
+            saved = engine.enroll_user(
+                user,
+                captured_embeddings,
+                camera_type="rgb_webcam",
+                model_name=model_name,
+                check_duplicate=False,
+            )
             return saved
 
     finally:
