@@ -28,7 +28,7 @@ import numpy as np
 
 from argus.config import ArgusConfig, FaceUnlockConfig
 from argus.engine import FaceEngine, VerificationResult
-from argus.hardware import CameraType, probe_cameras, select_camera
+from argus.hardware import CameraType, probe_cameras, safe_release_camera, select_camera
 from argus.liveness import LivenessResult
 from argus.ui import (
     BiometricSpinner,
@@ -290,7 +290,7 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig, model_name: str 
             print("\033[91m[!] Failed to save enrollment data.\033[0m")
             return 1
     finally:
-        cap.release()
+        safe_release_camera(cap)
 
 
 def _terminal_test(user: str, engine: FaceEngine, cfg: FaceUnlockConfig) -> int:
@@ -369,7 +369,7 @@ def _terminal_test(user: str, engine: FaceEngine, cfg: FaceUnlockConfig) -> int:
             print(f"  Reason:   {fail_reason}\n")
             return 1
     finally:
-        cap.release()
+        safe_release_camera(cap)
 
 
 def cmd_add(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:

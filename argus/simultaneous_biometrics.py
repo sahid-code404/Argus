@@ -30,7 +30,7 @@ import cv2
 
 from argus.config import ArgusConfig, FaceUnlockConfig
 from argus.engine import FaceEngine, VerificationResult
-from argus.hardware import CameraDevice, CameraType, select_camera
+from argus.hardware import CameraDevice, CameraType, safe_release_camera, select_camera
 
 
 @dataclass
@@ -344,8 +344,7 @@ class SimultaneousBiometrics:
 
                     time.sleep(0.01)
             finally:
-                if cap is not None:
-                    cap.release()
+                safe_release_camera(cap)
 
         face_thread = threading.Thread(target=_face_worker, name="FaceWorkerThread", daemon=True)
         face_thread.start()

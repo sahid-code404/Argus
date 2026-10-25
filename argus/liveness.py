@@ -56,12 +56,12 @@ class LivenessDetector:
     def __init__(
         self,
         model_path: Optional[str] = None,
-        min_liveness_threshold: float = 0.60,
-        texture_weight: float = 0.20,
-        motion_weight: float = 0.30,
-        frequency_weight: float = 0.15,
+        min_liveness_threshold: float = 0.55,
+        texture_weight: float = 0.10,
+        motion_weight: float = 0.25,
+        frequency_weight: float = 0.10,
         color_weight: float = 0.10,
-        neural_weight: float = 0.25,
+        neural_weight: float = 0.45,
     ):
         self.threshold = min_liveness_threshold
         self.weights = {
@@ -182,8 +182,8 @@ class LivenessDetector:
         out = self.neural_net.forward()
         logits = out[0]
 
-        real_logit = float(logits[1])
-        spoof_logit = float(logits[0])
+        real_logit = float(logits[0])
+        spoof_logit = float(logits[1])
         logit_diff = real_logit - spoof_logit
 
         # Sigmoid probability
@@ -589,7 +589,7 @@ class LivenessDetector:
                 self.weights["color"] * color_score
             )
             # Factor in bezel and glare penalties
-            confidence *= (bezel_score * 0.4 + 0.6)
+            confidence *= (bezel_score * 0.3 + 0.7)
             confidence *= (glare_score * 0.3 + 0.7)
 
             # Strict Veto Checks:
@@ -602,7 +602,7 @@ class LivenessDetector:
             elif motion_details.get("is_planar_moving_2d") and len(self.landmark_history) >= 3:
                 is_live = False
                 verdict = "PLANAR_2D_SPOOF"
-            elif bezel_score < 0.50:
+            elif bezel_score < 0.35 and neural_score < 0.60:
                 is_live = False
                 verdict = "PHONE_BEZEL_DETECTED"
             elif len(self.landmark_history) < 3:

@@ -25,7 +25,7 @@ import numpy as np
 from argus.config import ArgusConfig, FaceUnlockConfig
 from argus.engine import FaceEngine
 from argus.gui_enroll import _ensure_gui_environment, _find_webcam_device
-from argus.hardware import select_camera
+from argus.hardware import safe_release_camera, select_camera
 
 
 def run_gui_test(user: str, engine: FaceEngine, config: Optional[FaceUnlockConfig] = None) -> None:
@@ -148,8 +148,7 @@ def run_gui_test(user: str, engine: FaceEngine, config: Optional[FaceUnlockConfi
             if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                 break
     finally:
-        if cap is not None:
-            cap.release()
+        safe_release_camera(cap)
         try:
             cv2.destroyAllWindows()
             for _ in range(5):

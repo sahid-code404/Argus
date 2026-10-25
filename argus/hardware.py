@@ -48,6 +48,28 @@ DEPTH_PIXEL_FORMATS = frozenset({
 
 # Name keywords indicating IR or Depth capability
 IR_NAME_KEYWORDS = ("ir", "infrared", "hello", "windows hello", "realsense ir")
+
+
+def safe_release_camera(cap) -> None:
+    """Cleanly release OpenCV camera capture device, silencing kernel V4L2 VIDIOC_QBUF buffer release warnings."""
+    if cap is None:
+        return
+    try:
+        stderr_fd = 2
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        old_stderr = os.dup(stderr_fd)
+        try:
+            os.dup2(devnull, stderr_fd)
+            cap.release()
+        finally:
+            os.dup2(old_stderr, stderr_fd)
+            os.close(old_stderr)
+            os.close(devnull)
+    except Exception:
+        try:
+            cap.release()
+        except Exception:
+            pass
 DEPTH_NAME_KEYWORDS = ("depth", "realsense depth", "astra depth", "tof", "time of flight")
 
 # Known USB Vendor/Product IDs for IR cameras (hex strings lowercase)

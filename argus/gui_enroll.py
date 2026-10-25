@@ -26,7 +26,7 @@ import numpy as np
 
 from argus.config import ArgusConfig, FaceUnlockConfig
 from argus.engine import FaceEngine
-from argus.hardware import CameraDevice, CameraType, probe_cameras, select_camera
+from argus.hardware import CameraDevice, CameraType, probe_cameras, safe_release_camera, select_camera
 
 
 # Guidance stages for varied biometric sample capture
@@ -405,8 +405,7 @@ def run_gui_enrollment(
             return saved
 
     finally:
-        if cap is not None:
-            cap.release()
+        safe_release_camera(cap)
         try:
             cv2.destroyAllWindows()
             for _ in range(5):
