@@ -208,14 +208,14 @@ fi
 # -----------------------------------------------------------------
 echo -e "\n${C_BOLD}--> Step 3/6: Security Profile & Verification Sensitivity...${C_RESET}"
 echo -e " Choose verification security profile:"
-echo -e "   ${C_CYAN}[L]${C_RESET} Low / Convenient   (Threshold: 0.30, Liveness: 0.45, Timeout: 2.5s) - Fastest recognition"
-echo -e "   ${C_CYAN}[M]${C_RESET} Medium / Balanced  (Threshold: 0.33, Liveness: 0.55, Timeout: 3.5s) - ${C_GREEN}Recommended${C_RESET}"
-echo -e "   ${C_CYAN}[H]${C_RESET} High / Strict      (Threshold: 0.40, Liveness: 0.65, Timeout: 4.0s) - Maximum anti-spoofing"
+echo -e "   ${C_CYAN}[L]${C_RESET} Low / Convenient   (Threshold: 0.35, Liveness: 0.55, Timeout: 2.5s) - Fastest recognition"
+echo -e "   ${C_CYAN}[M]${C_RESET} Medium / Balanced  (Threshold: 0.38, Liveness: 0.65, Timeout: 3.5s) - ${C_GREEN}Recommended${C_RESET}"
+echo -e "   ${C_CYAN}[H]${C_RESET} High / Strict      (Threshold: 0.44, Liveness: 0.75, Timeout: 4.0s) - Maximum anti-spoofing"
 echo -e "   ${C_CYAN}[C]${C_RESET} Custom Tweaks      (Manually set match & liveness thresholds)"
 
 SECURITY_PROFILE="balanced"
-COSINE_TH="0.33"
-LIVENESS_TH="0.55"
+COSINE_TH="0.38"
+LIVENESS_TH="0.65"
 TIMEOUT_SEC="3.5"
 
 if [ "$INTERACTIVE" -eq 1 ]; then
@@ -224,29 +224,29 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     case "${prof_choice^^}" in
         L)
             SECURITY_PROFILE="convenient"
-            COSINE_TH="0.30"
-            LIVENESS_TH="0.45"
+            COSINE_TH="0.35"
+            LIVENESS_TH="0.55"
             TIMEOUT_SEC="2.5"
             ;;
         H)
             SECURITY_PROFILE="strict"
-            COSINE_TH="0.40"
-            LIVENESS_TH="0.65"
+            COSINE_TH="0.44"
+            LIVENESS_TH="0.75"
             TIMEOUT_SEC="4.0"
             ;;
         C)
             SECURITY_PROFILE="custom"
-            read -rp "   Enter Cosine Match Threshold [0.25 - 0.50] (Default: 0.33): " custom_cos
-            COSINE_TH="${custom_cos:-0.33}"
-            read -rp "   Enter Min Liveness Score [0.30 - 0.90] (Default: 0.55): " custom_liv
-            LIVENESS_TH="${custom_liv:-0.55}"
+            read -rp "   Enter Cosine Match Threshold [0.25 - 0.50] (Default: 0.38): " custom_cos
+            COSINE_TH="${custom_cos:-0.38}"
+            read -rp "   Enter Min Liveness Score [0.30 - 0.90] (Default: 0.65): " custom_liv
+            LIVENESS_TH="${custom_liv:-0.65}"
             read -rp "   Enter Recognition Timeout in seconds (Default: 3.5): " custom_to
             TIMEOUT_SEC="${custom_to:-3.5}"
             ;;
         *)
             SECURITY_PROFILE="balanced"
-            COSINE_TH="0.33"
-            LIVENESS_TH="0.55"
+            COSINE_TH="0.38"
+            LIVENESS_TH="0.65"
             TIMEOUT_SEC="3.5"
             ;;
     esac

@@ -16,7 +16,8 @@ from typing import Optional
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb;wayland")
-os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.*=false;QFontDatabase=false;*.warning=false")
+os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts")
+os.environ["QT_LOGGING_RULES"] = "*.warning=false;qt.*=false;QFontDatabase=false"
 
 import cv2
 import numpy as np
@@ -147,8 +148,12 @@ def run_gui_test(user: str, engine: FaceEngine, config: Optional[FaceUnlockConfi
             if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                 break
     finally:
-        cap.release()
-        cv2.destroyAllWindows()
-        for _ in range(5):
-            cv2.waitKey(1)
+        if cap is not None:
+            cap.release()
+        try:
+            cv2.destroyAllWindows()
+            for _ in range(5):
+                cv2.waitKey(1)
+        except Exception:
+            pass
         print("\033[92m[✓] Live camera preview closed.\033[0m")

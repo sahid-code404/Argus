@@ -328,10 +328,20 @@ class BiometricVault:
                         "count": len(existing_vectors),
                     }]
 
+        existing_names = [m.get("name", "").strip().lower() for m in existing_models]
+        clean_name = model_name.strip()[:24]
+        if clean_name.lower() in existing_names:
+            suffix = 2
+            cand = f"{clean_name[:21]}_{suffix}"
+            while cand.lower() in existing_names:
+                suffix += 1
+                cand = f"{clean_name[:21]}_{suffix}"
+            clean_name = cand
+
         next_id = max([m.get("id", 0) for m in existing_models] or [0]) + 1
         new_model_info = {
             "id": next_id,
-            "name": model_name[:24],
+            "name": clean_name,
             "created_at": now_str,
             "camera_type": camera_type,
             "count": len(embeddings),

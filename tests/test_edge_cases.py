@@ -40,7 +40,7 @@ def test_nonexistent_custom_config_fallback(monkeypatch):
     monkeypatch.setattr("os.path.exists", lambda p: False)
     cfg = FaceUnlockConfig.load("/nonexistent/path/config.ini")
     assert cfg.camera_device == "auto"
-    assert cfg.cosine_threshold == 0.33
+    assert cfg.cosine_threshold == 0.38
 
 
 def test_pam_authenticator_camera_open_failure(tmp_path, monkeypatch):
@@ -54,6 +54,7 @@ def test_pam_authenticator_camera_open_failure(tmp_path, monkeypatch):
         data_dir=str(faces_dir),
         camera_device="/dev/video999_fake",
         pam_enabled=True,
+        show_feedback=False,
     )
     engine = FaceEngine(model_dir=str(models_dir), data_dir=str(faces_dir))
     # Enroll dummy
@@ -73,3 +74,32 @@ def test_pam_authenticator_camera_open_failure(tmp_path, monkeypatch):
     success, msg = auth.authenticate_user("alice")
     assert not success
     assert "failed to open" in msg.lower()
+
+
+def test_stranger_face_strictly_rejected_at_threshold(tmp_path):
+    """An unenrolled person with similarity below calibrated threshold must never verify."""
+    models_dir = Path(__file__).resolve().parent.parent / "models"
+    faces_dir = tmp_path / "faces"
+    faces_dir.mkdir()
+
+    engine = FaceEngine(
+        model_dir=str(models_dir),
+        data_dir=str(faces_dir),
+        cosine_threshold=0.38,
+    )
+
+    # Enroll user 'alice'
+    rng = np.random.RandomState(42)
+    v1 = rng.randn(1, 128).astype(np.float32)
+    v1 = v1 / np.linalg.norm(v1)
+    engine.enroll_user("alice", [v1])
+
+    # Stranger with similarity ~0.30 (borderline but below 0.38)
+    stranger = rng.randn(1, 128).astype(np.float32)
+    stranger = stranger / np.linalg.norm(stranger)
+
+    enrolled = engine.load_user_embeddings("alice")
+    sim, idx, _ = engine.find_best_match(stranger, enrolled, user="alice")
+
+    assert sim < 0.38
+

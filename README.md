@@ -200,9 +200,9 @@ Argus offers three calibrated operational profiles:
 
 | Profile | Cosine Threshold | Liveness Score | Best For |
 |---|---|---|---|
-| **L (Low / Convenient)** | `0.30` | `0.45` | Home laptops, fast single-user desktop unlock |
-| **M (Medium / Balanced)** | `0.33` | `0.55` | **Default**: Daily driver, strong protection against 2D photos & screen replays |
-| **H (High / Strict)** | `0.38` | `0.70` | Enterprise, multi-user workstations, strict anti-spoofing |
+| **L (Low / Convenient)** | `0.35` | `0.55` | Home laptops, fast single-user desktop unlock |
+| **M (Medium / Balanced)** | `0.38` | `0.65` | **Default**: Daily driver, strong protection against 2D photos & screen replays |
+| **H (High / Strict)** | `0.44` | `0.75` | Enterprise, multi-user workstations, strict anti-spoofing |
 
 ---
 

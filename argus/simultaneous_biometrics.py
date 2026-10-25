@@ -50,6 +50,7 @@ class FingerprintVerifier:
         self._master: Optional[int] = None
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._lock = threading.RLock()
         self.verified = False
         self.error: Optional[str] = None
 
@@ -167,25 +168,28 @@ class FingerprintVerifier:
         return True
 
     def stop(self) -> None:
-        """Stop verification and release fingerprint device."""
+        """Stop verification and release fingerprint device cleanly."""
         self._stop_event.set()
-        if self.proc:
-            try:
-                if self.proc.poll() is None:
-                    self.proc.terminate()
-                    try:
-                        self.proc.wait(timeout=0.2)
-                    except subprocess.TimeoutExpired:
-                        self.proc.kill()
-            except Exception:
-                pass
+        with self._lock:
+            proc = self.proc
             self.proc = None
-        if self._master is not None:
-            try:
-                os.close(self._master)
-            except OSError:
-                pass
+            if proc:
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=0.2)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                except Exception:
+                    pass
+            master = self._master
             self._master = None
+            if master is not None:
+                try:
+                    os.close(master)
+                except OSError:
+                    pass
 
 
 def _get_output_stream():
@@ -273,6 +277,7 @@ class SimultaneousBiometrics:
 
             cap = cv2.VideoCapture(camera_dev.path, cv2.CAP_V4L2)
             if not cap.isOpened():
+                cap.release()
                 if camera_dev.path.startswith("/dev/video"):
                     try:
                         dev_num = int(camera_dev.path.replace("/dev/video", ""))
@@ -280,8 +285,10 @@ class SimultaneousBiometrics:
                     except Exception:
                         pass
                 if not cap.isOpened():
+                    cap.release()
                     cap = cv2.VideoCapture(camera_dev.path)
                     if not cap.isOpened():
+                        cap.release()
                         face_failure_reason = f"Failed to open video capture device {camera_dev.path} (camera may be in use)"
                         return
 
@@ -299,14 +306,22 @@ class SimultaneousBiometrics:
 
                 is_ir = camera_dev.camera_type == CameraType.INFRARED
                 self.engine.liveness_detector.reset()
-                match_score = 0
-                min_required_matches = 1 if is_ir else 2
+                consecutive_matches = 0
+                min_required_matches = getattr(self.config, "min_consensus_frames", 3)
+                if is_ir:
+                    min_required_matches = max(1, min_required_matches - 1)
 
+                read_errors = 0
                 while not stop_event.is_set():
                     ret, frame = cap.read()
                     if not ret or frame is None:
+                        read_errors += 1
+                        if read_errors > 25:
+                            face_failure_reason = "Camera video stream disconnected or unreadable"
+                            return
                         time.sleep(0.01)
                         continue
+                    read_errors = 0
 
                     res: VerificationResult = self.engine.verify(
                         user=user,
@@ -316,16 +331,21 @@ class SimultaneousBiometrics:
                     )
 
                     if res.matched and res.liveness.is_live:
-                        match_score += 1
-                        if match_score >= min_required_matches:
+                        consecutive_matches += 1
+                        if consecutive_matches >= min_required_matches:
                             on_auth_success("FACE")
                             return
                     else:
-                        match_score = max(0, match_score - 1)
+                        consecutive_matches = 0
+                        if res.face_detected and not res.liveness.is_live:
+                            face_failure_reason = f"Presentation attack detected ({res.liveness.verdict})"
+                        elif res.face_detected and not res.matched:
+                            face_failure_reason = "Unrecognized face"
 
                     time.sleep(0.01)
             finally:
-                cap.release()
+                if cap is not None:
+                    cap.release()
 
         face_thread = threading.Thread(target=_face_worker, name="FaceWorkerThread", daemon=True)
         face_thread.start()
@@ -357,6 +377,11 @@ class SimultaneousBiometrics:
                     frame_idx += 1
                     out.write(f"\r\033[K{prompt_str} {color}[ {symbol} ]\033[0m")
                     out.flush()
+
+                # If face worker has finished and no fingerprint is running, abort immediately
+                if not face_thread.is_alive() and (not fp_verifier or not fp_verifier._thread or not fp_verifier._thread.is_alive()):
+                    break
+
                 time.sleep(0.08)
 
             if auth_event.is_set():
@@ -381,7 +406,7 @@ class SimultaneousBiometrics:
 
                 err_msg = (
                     face_failure_reason
-                    if "failed to open" in face_failure_reason.lower()
+                    if any(k in face_failure_reason.lower() for k in ("failed to open", "attack detected", "unrecognized", "disconnected"))
                     else "Biometric verification failed"
                 )
                 return BiometricAuthResult(

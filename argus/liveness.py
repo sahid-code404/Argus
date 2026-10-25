@@ -188,9 +188,8 @@ class LivenessDetector:
 
         # Sigmoid probability
         prob_real = 1.0 / (1.0 + math.exp(-logit_diff))
-        # Hard veto cutoff: screen replays and prints score strongly negative (< -2.0)
-        # Normal CMOS webcams in low lighting fluctuate around -0.5 to -1.0
-        is_real = logit_diff >= -1.8
+        # Strict veto cutoff: real face must have real_logit >= spoof_logit (prob_real >= 0.50)
+        is_real = logit_diff >= 0.0
 
         return prob_real, is_real, {
             "real_logit": real_logit,
@@ -240,7 +239,9 @@ class LivenessDetector:
         if vertical_lines >= 2 and horizontal_lines >= 1:
             score = 0.15  # Clear phone/tablet bezel bounding box
         elif vertical_lines >= 2 or horizontal_lines >= 2:
-            score = 0.40
+            score = 0.35
+        elif vertical_lines >= 1 and horizontal_lines >= 1:
+            score = 0.65
         else:
             score = 0.95
 
@@ -419,14 +420,14 @@ class LivenessDetector:
             if abs(eye_distances[i] - eye_distances[i - 1]) > 0.07 * (eye_distances[i] + 1e-6):
                 blinks += 1
 
-        is_static_2d = bool(avg_disp < 0.25 and ratio_std < 0.001)
-        # Planar moving photo check: moving, but perfectly affine (flat 2D surface moving in space)
-        is_planar_moving_2d = bool(avg_disp >= 0.5 and avg_affine_res < 0.20)
+        is_static_2d = bool(avg_disp < 0.35 and ratio_std < 0.0018)
+        # Planar moving photo check: moving, but pure 2D planar affine motion without 3D depth parallax
+        is_planar_moving_2d = bool(avg_affine_res < 0.25 and ratio_std < 0.0025 and blinks == 0)
 
         if is_static_2d:
-            motion_score = 0.10  # Frozen 2D photo
+            motion_score = 0.05  # Frozen 2D photo
         elif is_planar_moving_2d:
-            motion_score = 0.20  # Moving flat 2D screen/paper (homography constraint violated)
+            motion_score = 0.15  # Moving flat 2D screen/paper (homography constraint violated)
         elif blinks > 0 or (avg_disp >= 0.4 and avg_affine_res >= 0.35):
             motion_score = 0.95  # Confirmed 3D depth parallax & biological movement
         else:
@@ -490,10 +491,10 @@ class LivenessDetector:
                 if diff / mean_var > 0.35:
                     blinks += 1
 
-        is_frozen_photo = bool(len(self.eye_variance_history) >= 4 and temporal_eye_std < 0.8)
+        is_frozen_photo = bool(len(self.eye_variance_history) >= 3 and temporal_eye_std < 1.0 and blinks == 0)
         if is_frozen_photo:
-            score = 0.20
-        elif blinks > 0 or temporal_eye_std > 6.0:
+            score = 0.10
+        elif blinks > 0 or temporal_eye_std > 5.0:
             score = 0.95
         else:
             score = 0.75
@@ -595,13 +596,13 @@ class LivenessDetector:
             if not is_neural_real and self.neural_net is not None:
                 is_live = False
                 verdict = "NEURAL_PAD_SPOOF"
-            elif (motion_details.get("is_static_2d") or eye_details.get("is_frozen_photo")) and len(self.landmark_history) >= 4:
+            elif (motion_details.get("is_static_2d") or eye_details.get("is_frozen_photo")) and len(self.landmark_history) >= 3:
                 is_live = False
                 verdict = "STATIC_2D_PHOTO"
-            elif motion_details.get("is_planar_moving_2d") and len(self.landmark_history) >= 4:
+            elif motion_details.get("is_planar_moving_2d") and len(self.landmark_history) >= 3:
                 is_live = False
                 verdict = "PLANAR_2D_SPOOF"
-            elif bezel_score < 0.3:
+            elif bezel_score < 0.50:
                 is_live = False
                 verdict = "PHONE_BEZEL_DETECTED"
             elif len(self.landmark_history) < 3:

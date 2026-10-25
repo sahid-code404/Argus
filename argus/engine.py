@@ -63,9 +63,9 @@ class FaceEngine:
         self,
         model_dir: Optional[str] = None,
         detection_threshold: float = 0.45,
-        cosine_threshold: float = 0.33,
+        cosine_threshold: float = 0.38,
         data_dir: Optional[str] = None,
-        min_liveness_threshold: float = 0.55,
+        min_liveness_threshold: float = 0.65,
         use_tpm: bool = False,
     ):
         if model_dir is None:
@@ -283,10 +283,35 @@ class FaceEngine:
                     pass
         return sorted(users)
 
+    @staticmethod
+    def verify_intra_model_consistency(
+        embeddings: List[np.ndarray],
+        min_similarity: float = 0.35,
+    ) -> Tuple[bool, float]:
+        """Verify that all captured embeddings in an enrollment session belong to the same person.
+
+        Computes pairwise cosine similarity between all angle samples.
+        Returns: (is_consistent: bool, min_pairwise_sim: float)
+        """
+        if not embeddings or len(embeddings) < 2:
+            return True, 1.0
+
+        min_sim = 1.0
+        n = len(embeddings)
+        for i in range(n):
+            for j in range(i + 1, n):
+                sim = native_cosine_similarity(embeddings[i], embeddings[j])
+                if sim < min_sim:
+                    min_sim = sim
+                if sim < min_similarity:
+                    return False, float(sim)
+        return True, float(min_sim)
+
     def check_duplicate_face(
         self,
         candidate_embeddings: List[np.ndarray],
         user: Optional[str] = None,
+        threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[str], float]:
         """Check if candidate embeddings already match an enrolled face model.
 
@@ -296,6 +321,7 @@ class FaceEngine:
         if not candidate_embeddings:
             return False, None, 0.0
 
+        check_threshold = threshold if threshold is not None else max(0.36, self.cosine_threshold)
         candidates_to_test = list(candidate_embeddings)
         mean_emb = np.mean(candidate_embeddings, axis=0)
         norm = np.linalg.norm(mean_emb)
@@ -318,7 +344,7 @@ class FaceEngine:
             for cand in candidates_to_test:
                 best_score, best_idx, _ = self.find_best_match(cand, enrolled_vectors, user=u)
 
-                if best_score >= self.cosine_threshold:
+                if best_score >= check_threshold:
                     accum = 0
                     matched_name = "Existing Model"
                     for m in models:
@@ -362,10 +388,16 @@ class FaceEngine:
         camera_type: str = "rgb_webcam",
         model_name: str = "Face1",
         check_duplicate: bool = True,
+        check_intra_consistency: bool = True,
     ) -> bool:
         """Encrypt and save user's enrolled face embeddings into biometric vault with duplicate protection."""
         if not embeddings:
             return False
+
+        if check_intra_consistency and len(embeddings) >= 2:
+            is_consistent, _ = self.verify_intra_model_consistency(embeddings)
+            if not is_consistent:
+                return False
 
         if check_duplicate:
             is_dup, _, _ = self.check_duplicate_face(embeddings, user)
@@ -515,6 +547,20 @@ class FaceEngine:
                 user=user,
                 threshold=self.cosine_threshold,
                 details={"reason": f"liveness check failed: {liveness_res.verdict}"},
+            )
+
+        # Quality check: Face size & detection confidence
+        det_score = float(primary_face[14])
+        fw, fh = float(primary_face[2]), float(primary_face[3])
+        if det_score < 0.48 or fw < 45.0 or fh < 45.0:
+            return VerificationResult(
+                matched=False,
+                confidence=0.0,
+                liveness=liveness_res,
+                face_detected=True,
+                user=user,
+                threshold=self.cosine_threshold,
+                details={"reason": "Face too small or low detection confidence for reliable matching"},
             )
 
         # 2. Extract feature and project into protected cancelable space Q

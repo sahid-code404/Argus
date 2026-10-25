@@ -80,16 +80,22 @@ def pam_main(argv: Optional[list[str]] = None) -> int:
     0 = PAM_SUCCESS (User authenticated)
     1 = PAM_AUTH_ERR (Authentication failed or fallback needed)
     """
-    args = argv or sys.argv[1:]
-    user = args[0] if args else (os.environ.get("PAM_USER") or "")
-    if not user or user == "root":
-        user = os.environ.get("SUDO_USER") or user or os.environ.get("USER") or os.getlogin()
-    user = user.strip() if user else "user"
+    try:
+        args = argv or sys.argv[1:]
+        user = args[0] if args else (os.environ.get("PAM_USER") or "")
+        if not user or user == "root":
+            user = os.environ.get("SUDO_USER") or user or os.environ.get("USER") or os.getlogin()
+        user = user.strip() if user else "user"
 
-    authenticator = PamAuthenticator()
-    success, message = authenticator.authenticate_user(user)
+        authenticator = PamAuthenticator()
+        success, message = authenticator.authenticate_user(user)
 
-    return 0 if success else 1
+        return 0 if success else 1
+    except (KeyboardInterrupt, EOFError):
+        return 1
+    except Exception as e:
+        sys.stderr.write(f"\033[91m[Argus PAM Error]\033[0m {e}\n")
+        return 1
 
 
 if __name__ == "__main__":

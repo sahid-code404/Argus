@@ -219,3 +219,46 @@ def test_cmd_list_and_remove(temp_dir, capsys):
     # Vault should now be completely cleared
     models_empty = engine.list_user_models(user)
     assert len(models_empty) == 0
+
+
+def test_intra_model_consistency_rejection(temp_dir):
+    """Enrollment must reject mixing two different faces within a single model."""
+    engine = FaceEngine(data_dir=temp_dir)
+    user = "alice"
+
+    alice_vec = create_normalized_face_vector(seed=111)
+    bob_vec = create_normalized_face_vector(seed=222)
+
+    # Inconsistent mixture: 3 of Alice, 2 of Bob
+    mixed_samples = [alice_vec, alice_vec, alice_vec, bob_vec, bob_vec]
+
+    # 1. verify_intra_model_consistency must return False
+    is_consistent, min_sim = engine.verify_intra_model_consistency(mixed_samples)
+    assert is_consistent is False
+    assert min_sim < 0.35
+
+    # 2. enroll_user must reject this mixed set
+    saved = engine.enroll_user(user, mixed_samples, model_name="MixedFace")
+    assert saved is False
+    assert len(engine.list_user_models(user)) == 0
+
+
+def test_duplicate_model_name_disambiguation(temp_dir):
+    """Enrolling with an identical model name auto-disambiguates so each model has a distinct name."""
+    engine = FaceEngine(data_dir=temp_dir)
+    user = "shaque"
+
+    v1 = [create_normalized_face_vector(seed=301) for _ in range(5)]
+    assert engine.enroll_user(user, v1, model_name="Face1") is True
+
+    # Enroll second distinct face with the same requested name "Face1"
+    v2 = [create_normalized_face_vector(seed=302) for _ in range(5)]
+    assert engine.enroll_user(user, v2, model_name="Face1") is True
+
+    models = engine.list_user_models(user)
+    assert len(models) == 2
+    assert models[0]["name"] == "Face1"
+    assert models[1]["name"] == "Face1_2"
+    assert models[0]["id"] == 1
+    assert models[1]["id"] == 2
+

@@ -138,3 +138,31 @@ def test_insufficient_temporal_history_on_single_frame():
     assert not res.is_live
     assert res.verdict in ("INSUFFICIENT_TEMPORAL_HISTORY", "NEURAL_PAD_SPOOF")
 
+
+def test_photo_attack_rejected_after_3_frames():
+    """A static photo presented over 3+ frames must be strictly rejected."""
+    detector = LivenessDetector()
+    frame = np.full((480, 640, 3), 120, dtype=np.uint8)
+    face = np.array([200, 150, 120, 140, 230, 180, 290, 180, 260, 210, 240, 250, 280, 250, 0.9])
+
+    # Feed 3 identical frames (simulating static printed photo held in front of webcam)
+    res1 = detector.evaluate_frame(frame, face)
+    res2 = detector.evaluate_frame(frame, face)
+    res3 = detector.evaluate_frame(frame, face)
+
+    assert not res3.is_live
+    assert res3.verdict in ("STATIC_2D_PHOTO", "NEURAL_PAD_SPOOF")
+
+
+def test_phone_bezel_rejection_veto():
+    """Detecting smartphone / screen borders must strictly veto liveness."""
+    detector = LivenessDetector()
+    frame = np.full((300, 300, 3), 40, dtype=np.uint8)
+    # Draw prominent rectangular smartphone bezel
+    cv2.rectangle(frame, (60, 40), (240, 260), (220, 220, 220), 4)
+    face_box = np.array([90, 80, 100, 120, 110, 100, 150, 100, 130, 120, 115, 140, 145, 140, 0.9])
+
+    score, details = detector.detect_screen_bezel(frame, face_box[:4])
+    assert score < 0.50
+
+

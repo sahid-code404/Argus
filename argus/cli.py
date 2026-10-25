@@ -259,6 +259,13 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig, model_name: str 
             sample_idx += 1
             print(f"\033[1;32m✔ Sample {sample_idx}/{target_samples} encrypted and registered!\033[0m")
 
+        # Verify intra-model consistency: all captured angles must belong to the same person
+        is_consistent, min_sim = engine.verify_intra_model_consistency(embeddings)
+        if not is_consistent:
+            print(f"\n\033[91m[!] Enrollment rejected: Inconsistent faces detected across angles (min similarity: {min_sim:.3f} < 0.35).\033[0m")
+            print("\033[91m[!] All angles must belong to the same individual.\033[0m\n")
+            return 1
+
         # Duplicate face check
         is_dup, dup_model, dup_sim = engine.check_duplicate_face(embeddings, user=user)
         if is_dup:
@@ -272,6 +279,7 @@ def cmd_enroll(args: argparse.Namespace, cfg: FaceUnlockConfig, model_name: str 
             camera_type=selected_cam.camera_type.value,
             model_name=model_name,
             check_duplicate=False,
+            check_intra_consistency=False,
         )
         if success:
             render_banner("ENROLLMENT COMPLETE", f"Face model '{model_name}' registered for '{user}'")
@@ -314,7 +322,7 @@ def _terminal_test(user: str, engine: FaceEngine, cfg: FaceUnlockConfig) -> int:
     passed = False
     fail_reason = "No face detected"
     match_score = 0
-    min_required_matches = 1 if is_ir else 2
+    min_required_matches = getattr(cfg, "min_consensus_frames", 3) if not is_ir else 2
 
     try:
         while time.monotonic() - start_time < cfg.max_timeout:
@@ -333,14 +341,14 @@ def _terminal_test(user: str, engine: FaceEngine, cfg: FaceUnlockConfig) -> int:
 
             if result.face_detected:
                 if not result.liveness.is_live:
-                    fail_reason = "Presentation attack detected (photo or screen spoof rejected)"
+                    fail_reason = f"Presentation attack detected ({result.liveness.verdict})"
                 elif not result.matched:
                     fail_reason = "Unrecognized face"
 
             if result.matched and result.liveness.is_live:
                 match_score += 1
             else:
-                match_score = max(0, match_score - 1)
+                match_score = 0
 
             if match_score >= min_required_matches:
                 passed = True
@@ -841,9 +849,9 @@ def _interactive_config_menu(cfg: FaceUnlockConfig) -> int:
                 print("Invalid number.")
         elif choice == "8":
             print("\nSecurity Profiles:")
-            print("  [L] Low / Convenient   (Threshold: 0.30, Liveness: 0.45, Timeout: 2.5s)")
-            print("  [M] Medium / Balanced  (Threshold: 0.33, Liveness: 0.55, Timeout: 3.5s)")
-            print("  [H] High / Strict      (Threshold: 0.40, Liveness: 0.65, Timeout: 4.0s)")
+            print("  [L] Low / Convenient   (Threshold: 0.35, Liveness: 0.55, Timeout: 2.5s)")
+            print("  [M] Medium / Balanced  (Threshold: 0.38, Liveness: 0.65, Timeout: 3.5s)")
+            print("  [H] High / Strict      (Threshold: 0.44, Liveness: 0.75, Timeout: 4.0s)")
             print("  [C] Custom Tweaks")
             sub = input("Select profile [L/M/H/C]: ").strip().upper()
             if sub == "L":

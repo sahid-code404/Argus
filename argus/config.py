@@ -28,14 +28,15 @@ class ArgusConfig:
     fps: int = 30
 
     # Security settings
-    cosine_threshold: float = 0.33
-    min_liveness_score: float = 0.55
+    cosine_threshold: float = 0.38
+    min_liveness_score: float = 0.65
     require_liveness: bool = True
     max_timeout: float = 3.5
     warmup_frames: int = 4
     check_lid: bool = True
     use_tpm: bool = False
     security_mode: str = "balanced"
+    min_consensus_frames: int = 3
 
     # Policies
     policy_sudo: bool = True
@@ -86,19 +87,22 @@ class ArgusConfig:
         m = mode.lower()
         if m == "convenient":
             self.security_mode = "convenient"
-            self.cosine_threshold = 0.30
-            self.min_liveness_score = 0.45
+            self.cosine_threshold = 0.35
+            self.min_liveness_score = 0.55
             self.max_timeout = 2.5
+            self.min_consensus_frames = 2
         elif m == "strict":
             self.security_mode = "strict"
-            self.cosine_threshold = 0.40
-            self.min_liveness_score = 0.65
+            self.cosine_threshold = 0.44
+            self.min_liveness_score = 0.75
             self.max_timeout = 4.0
+            self.min_consensus_frames = 4
         else:
             self.security_mode = "balanced"
-            self.cosine_threshold = 0.33
-            self.min_liveness_score = 0.55
+            self.cosine_threshold = 0.38
+            self.min_liveness_score = 0.65
             self.max_timeout = 3.5
+            self.min_consensus_frames = 3
 
     def is_service_enabled(self, service_name: str) -> bool:
         """Check if Face Unlock is permitted for the given PAM service name."""
@@ -174,6 +178,7 @@ class ArgusConfig:
             cfg.check_lid = sec.getboolean("check_lid", cfg.check_lid)
             cfg.use_tpm = sec.getboolean("use_tpm", cfg.use_tpm)
             cfg.security_mode = sec.get("security_mode", cfg.security_mode)
+            cfg.min_consensus_frames = sec.getint("min_consensus_frames", cfg.min_consensus_frames)
 
         if parser.has_section("policies"):
             pol = parser["policies"]
@@ -228,6 +233,7 @@ class ArgusConfig:
             "check_lid": str(self.check_lid).lower(),
             "use_tpm": str(self.use_tpm).lower(),
             "security_mode": self.security_mode,
+            "min_consensus_frames": str(self.min_consensus_frames),
         }
         parser["policies"] = {
             "sudo": str(self.policy_sudo).lower(),

@@ -16,9 +16,10 @@ import time
 from typing import List, Optional, Tuple
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
-# Force Qt/Wayland compatibility under modern GNOME
+# Force Qt/Wayland compatibility under modern GNOME and suppress missing font warnings
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb;wayland")
-os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.*=false;QFontDatabase=false;*.warning=false")
+os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts")
+os.environ["QT_LOGGING_RULES"] = "*.warning=false;qt.*=false;QFontDatabase=false"
 
 import cv2
 import numpy as np
@@ -325,9 +326,33 @@ def run_gui_enrollment(
                 success = False
                 break
 
-        # If all 5 angles captured successfully, check duplicate face
+        # If all 5 angles captured successfully, verify consistency and uniqueness
         if success and len(captured_embeddings) >= total_stages:
-            # Check for duplicate face across all models and users
+            # 1. Intra-model consistency check: all captured angles must belong to the same individual
+            is_consistent, min_sim = engine.verify_intra_model_consistency(captured_embeddings)
+            if not is_consistent:
+                sys.stderr.write(
+                    f"\n\033[91m[!] Inconsistent faces rejected: Captured angles do not belong to the same person (min similarity: {min_sim:.3f} < 0.35).\033[0m\n"
+                    f"\033[91m[!] All angles must belong to the same individual.\033[0m\n\n"
+                )
+                for _ in range(40):
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        frame = cv2.flip(frame, 1)
+                        _draw_ios_reticle(frame, cx, cy, reticle_radius, total_ticks, total_ticks, is_spoof=True)
+                        _draw_hud_banner(
+                            frame,
+                            top_text="Biometric Registration Rejected",
+                            sub_text=f"Inconsistent faces (min similarity: {min_sim:.2f})",
+                            bottom_instruction="Different Faces Detected",
+                            hint="All angles must belong to the same person",
+                            is_spoof=True,
+                        )
+                        cv2.imshow(window_name, frame)
+                        cv2.waitKey(40)
+                return False
+
+            # 2. Check for duplicate face across all models and users
             is_dup, dup_model, dup_sim = engine.check_duplicate_face(captured_embeddings, user=user)
             if is_dup:
                 sys.stderr.write(
@@ -375,14 +400,18 @@ def run_gui_enrollment(
                 camera_type="rgb_webcam",
                 model_name=model_name,
                 check_duplicate=False,
+                check_intra_consistency=False,
             )
             return saved
 
     finally:
-        cap.release()
-        cv2.destroyAllWindows()
-        # Drain events
-        for _ in range(5):
-            cv2.waitKey(1)
+        if cap is not None:
+            cap.release()
+        try:
+            cv2.destroyAllWindows()
+            for _ in range(5):
+                cv2.waitKey(1)
+        except Exception:
+            pass
 
     return False
