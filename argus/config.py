@@ -39,11 +39,34 @@ class ArgusConfig:
 
     # Policies
     policy_sudo: bool = True
-    policy_gdm: bool = True
     policy_polkit: bool = True
-    policy_login: bool = True
-    policy_lockers: bool = True
+    policy_lockscreen: bool = True
     policy_sshd: bool = False
+
+    @property
+    def policy_gdm(self) -> bool:
+        """Deprecated alias for policy_lockscreen; login managers are disabled."""
+        return self.policy_lockscreen
+
+    @policy_gdm.setter
+    def policy_gdm(self, value: bool) -> None:
+        self.policy_lockscreen = bool(value)
+
+    @property
+    def policy_lockers(self) -> bool:
+        return self.policy_lockscreen
+
+    @policy_lockers.setter
+    def policy_lockers(self, value: bool) -> None:
+        self.policy_lockscreen = bool(value)
+
+    @property
+    def policy_login(self) -> bool:
+        return False
+
+    @policy_login.setter
+    def policy_login(self, value: bool) -> None:
+        pass
 
     # Performance
     cache_camera_params: bool = True
@@ -85,17 +108,16 @@ class ArgusConfig:
         name = service_name.lower().strip()
         if "sudo" in name:
             return self.policy_sudo
-        elif any(k in name for k in ("gdm", "sddm", "lightdm")):
-            return self.policy_gdm
         elif "polkit" in name:
             return self.policy_polkit
-        elif any(k in name for k in ("login", "password-auth", "system-auth")):
-            return self.policy_login
         elif any(k in name for k in ("lock", "screensaver")):
-            return self.policy_lockers
+            return self.policy_lockscreen
         elif "ssh" in name:
             return self.policy_sshd
-        return True
+        elif any(k in name for k in ("gdm", "sddm", "lightdm", "login")):
+            # Session login managers are explicitly disabled to prevent GNOME Keyring lockouts
+            return False
+        return False
 
     @classmethod
     def load(cls, custom_path: Optional[str] = None) -> ArgusConfig:
@@ -156,10 +178,13 @@ class ArgusConfig:
         if parser.has_section("policies"):
             pol = parser["policies"]
             cfg.policy_sudo = pol.getboolean("sudo", cfg.policy_sudo)
-            cfg.policy_gdm = pol.getboolean("gdm", cfg.policy_gdm)
             cfg.policy_polkit = pol.getboolean("polkit", cfg.policy_polkit)
-            cfg.policy_login = pol.getboolean("login", cfg.policy_login)
-            cfg.policy_lockers = pol.getboolean("lockers", cfg.policy_lockers)
+            if "lockscreen" in pol:
+                cfg.policy_lockscreen = pol.getboolean("lockscreen", cfg.policy_lockscreen)
+            elif "lockers" in pol:
+                cfg.policy_lockscreen = pol.getboolean("lockers", cfg.policy_lockscreen)
+            elif "gdm" in pol:
+                cfg.policy_lockscreen = pol.getboolean("gdm", cfg.policy_lockscreen)
             cfg.policy_sshd = pol.getboolean("sshd", cfg.policy_sshd)
 
         if parser.has_section("performance"):
@@ -206,10 +231,8 @@ class ArgusConfig:
         }
         parser["policies"] = {
             "sudo": str(self.policy_sudo).lower(),
-            "gdm": str(self.policy_gdm).lower(),
             "polkit": str(self.policy_polkit).lower(),
-            "login": str(self.policy_login).lower(),
-            "lockers": str(self.policy_lockers).lower(),
+            "lockscreen": str(self.policy_lockscreen).lower(),
             "sshd": str(self.policy_sshd).lower(),
         }
         parser["performance"] = {

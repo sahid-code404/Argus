@@ -33,7 +33,7 @@ It provides an **Android / Windows Hello-grade** facial and simultaneous fingerp
 ```
                                +-----------------------------+
                                |    Authentication Request   |
-                               | (sudo, polkit, login, gdm)  |
+                               |  (sudo, polkit, lockscreen) |
                                +--------------+--------------+
                                               |
                                               v
@@ -178,7 +178,7 @@ sudo argus config
 ```
 
 - Toggle feedback banners and dynamic spinners.
-- Enable or disable PAM targets (`sudo`, `polkit-1`, `login`, `gdm`, `sshd`).
+- Enable or disable PAM targets (`sudo`, `polkit-1`, `lockscreen`, `sshd`).
 - Adjust matching thresholds, liveness sensitivity, and timeouts.
 - Set custom prompts before and after authentication.
 
@@ -206,16 +206,12 @@ Argus offers three calibrated operational profiles:
 
 ---
 
-## 🔐 GNOME Keyring & Display Manager Safety
+## 🔐 GNOME Keyring & Native Linux Biometrics
 
-> [!IMPORTANT]
-> **Why GDM face unlock is disabled by default:**
-> In modern desktop Linux (Fedora 40+, Ubuntu 24.04+), your saved browser passwords, SSH keys, and GNOME Online Account tokens are stored in the GNOME Secret Service (`login.keyring`).
-> The keyring is encrypted using your **plaintext login password**.
->
-> When biometric face unlock logs in at cold boot, it does not possess your plaintext password to decrypt the keyring, causing browsers to prompt for sign-in.
->
-> Argus defaults to keeping `sudo` and `polkit-1` enabled for instant terminal and GUI privilege elevation, while keeping `gdm-password` password-backed for seamless keyring decryption. You can toggle this via `sudo argus service enable gdm-password`.
+Argus is engineered following native Linux biometric standards (identical to how native Linux fingerprint readers operate):
+
+- **Zero Keyring Conflicts**: Cold-boot login managers (GDM, SDDM, LightDM) remain password-authenticated so your login password automatically unlocks `gnome-keyring`, `oo7-daemon`, Chrome/Brave credentials, and saved network keys.
+- **Instant Biometric Lock Screen**: Once logged in, Argus provides instantaneous biometric unlocking for your desktop Lock Screen (`gnome-screensaver`, `swaylock`, `hyprlock`, `waylock`, `cinnamon-screensaver`, `mate-screensaver`, `xfce4-screensaver`, `vlock`), `sudo` elevation, and `polkit` GUI dialogs. No passwords typed, and no keyring lockouts.
 
 ---
 

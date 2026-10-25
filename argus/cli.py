@@ -706,6 +706,11 @@ def cmd_service(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     enforce_sudo_privilege(f"service {args.action}")
     srv = args.service.lower().strip()
 
+    if any(k in srv for k in ("gdm", "sddm", "lightdm", "login")):
+        print("\033[93m[!] Session login managers (GDM, SDDM, login) are disabled by design to prevent GNOME Keyring lockouts.\033[0m")
+        print("To unlock your desktop screen with biometrics, use: \033[1;36msudo argus service enable lockscreen\033[0m")
+        return 1
+
     if args.action == "enable":
         if not integrator.is_service_available(srv):
             print(f"\033[91m[!] Service '{srv}' is not available on this system.\033[0m")
@@ -713,14 +718,12 @@ def cmd_service(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
         if integrator.enable_service(srv):
             if srv == "sudo":
                 cfg.policy_sudo = True
-            elif "gdm" in srv:
-                cfg.policy_gdm = True
             elif "polkit" in srv:
                 cfg.policy_polkit = True
-            elif srv == "login":
-                cfg.policy_login = True
             elif any(k in srv for k in ("lock", "screensaver")):
-                cfg.policy_lockers = True
+                cfg.policy_lockscreen = True
+            elif "ssh" in srv:
+                cfg.policy_sshd = True
             cfg.save()
             print(f"\033[92m[✓] Argus successfully enabled for '{srv}'.\033[0m")
             return 0
@@ -732,14 +735,12 @@ def cmd_service(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
         if integrator.disable_service(srv):
             if srv == "sudo":
                 cfg.policy_sudo = False
-            elif "gdm" in srv:
-                cfg.policy_gdm = False
             elif "polkit" in srv:
                 cfg.policy_polkit = False
-            elif srv == "login":
-                cfg.policy_login = False
             elif any(k in srv for k in ("lock", "screensaver")):
-                cfg.policy_lockers = False
+                cfg.policy_lockscreen = False
+            elif "ssh" in srv:
+                cfg.policy_sshd = False
             cfg.save()
             print(f"\033[92m[✓] Argus disabled for '{srv}'.\033[0m")
             return 0
@@ -771,8 +772,7 @@ def _interactive_config_menu(cfg: FaceUnlockConfig) -> int:
 
         sudo_en = cfg.policy_sudo and pam_status.get("sudo", {}).get("enabled", False)
         polkit_en = cfg.policy_polkit and pam_status.get("polkit-1", {}).get("enabled", False)
-        gdm_en = cfg.policy_gdm and pam_status.get("gdm-password", {}).get("enabled", False)
-        login_en = cfg.policy_login and pam_status.get("login", {}).get("enabled", False)
+        lock_en = cfg.policy_lockscreen and pam_status.get("lockscreen", {}).get("enabled", False)
         ssh_en = cfg.policy_sshd and pam_status.get("sshd", {}).get("enabled", False)
 
         tpm_state_str = (_fmt_state(cfg.use_tpm) if tpm_supported else "\033[90m[NOT SUPPORTED]\033[0m")
@@ -781,25 +781,23 @@ def _interactive_config_menu(cfg: FaceUnlockConfig) -> int:
         print(" [PAM Services Integration]")
         print(f"  1. Sudo Privilege Elevation:       {_fmt_state(sudo_en)}")
         print(f"  2. Polkit GUI Dialogs:             {_fmt_state(polkit_en)}")
-        print(f"  3. GDM Login & Lock Screen:        {_fmt_state(gdm_en)} \033[93m⚠️ (Keyring notice)\033[0m")
-        print(f"  4. Console / Terminal Login:       {_fmt_state(login_en)}")
-        print(f"  5. Screen Lockers:                 {_fmt_state(cfg.policy_lockers)}")
-        print(f"  6. SSH Remote Login:               {_fmt_state(ssh_en)}")
+        print(f"  3. Desktop Lock Screen:            {_fmt_state(lock_en)}")
+        print(f"  4. SSH Remote Login:               {_fmt_state(ssh_en)}")
         print()
         print(" [Authentication & Terminal Feedback]")
-        print(f"  7. Terminal Scanning Feedback:     {feedback_str}")
-        print(f"  8. Feedback Display Mode:          \033[1m{cfg.feedback_style.upper()}\033[0m (animated / clean / quiet)")
-        print(f"  9. Recognition Timeout:            \033[1m{cfg.max_timeout:.1f}s\033[0m")
+        print(f"  5. Terminal Scanning Feedback:     {feedback_str}")
+        print(f"  6. Feedback Display Mode:          \033[1m{cfg.feedback_style.upper()}\033[0m (animated / clean / quiet)")
+        print(f"  7. Recognition Timeout:            \033[1m{cfg.max_timeout:.1f}s\033[0m")
         print()
         print(" [Security Profile & Hardware]")
-        print(f" 10. Security Mode:                  \033[1m{cfg.security_mode.upper()}\033[0m (Threshold: {cfg.cosine_threshold:.2f}, Liveness: {cfg.min_liveness_score:.2f})")
-        print(f" 11. Hardware TPM 2.0 Key Sealing:   {tpm_state_str}")
+        print(f"  8. Security Mode:                  \033[1m{cfg.security_mode.upper()}\033[0m (Threshold: {cfg.cosine_threshold:.2f}, Liveness: {cfg.min_liveness_score:.2f})")
+        print(f"  9. Hardware TPM 2.0 Key Sealing:   {tpm_state_str}")
         print("-" * 65)
-        print(" Commands: [1-11] Toggle/Modify | [S] Save & Apply | [Q] Quit without saving")
+        print(" Commands: [1-9] Toggle/Modify | [S] Save & Apply | [Q] Quit without saving")
         print("=" * 65)
 
         try:
-            choice = input("Select an option [1-11, S, Q]: ").strip().upper()
+            choice = input("Select an option [1-9, S, Q]: ").strip().upper()
         except (KeyboardInterrupt, EOFError):
             print("\nAborted.")
             return 0
@@ -811,28 +809,9 @@ def _interactive_config_menu(cfg: FaceUnlockConfig) -> int:
             cfg.policy_polkit = not cfg.policy_polkit
             print(f"Polkit set to: {'ENABLED' if cfg.policy_polkit else 'DISABLED'}")
         elif choice == "3":
-            if not cfg.policy_gdm:
-                print("\n\033[93m" + "!" * 65)
-                print(" ⚠️  CRITICAL GNOME KEYRING & SECRET SERVICE NOTICE:")
-                print(" Logging in at cold boot using biometrics cannot unlock your")
-                print(" GNOME Keyring / oo7-daemon because your plaintext password is not")
-                print(" present. Saved browser logins (Chrome, Brave, etc.) will stay")
-                print(" locked until you provide your password.")
-                print(" Unlocking from lock screen after login is NOT affected.")
-                print("!" * 65 + "\033[0m")
-                confirm = input("Enable Face Unlock for GDM anyway? [y/N]: ").strip().lower()
-                if confirm in ("y", "yes"):
-                    cfg.policy_gdm = True
-            else:
-                cfg.policy_gdm = False
-            print(f"GDM set to: {'ENABLED' if cfg.policy_gdm else 'DISABLED'}")
+            cfg.policy_lockscreen = not cfg.policy_lockscreen
+            print(f"Desktop Lock Screen set to: {'ENABLED' if cfg.policy_lockscreen else 'DISABLED'}")
         elif choice == "4":
-            cfg.policy_login = not cfg.policy_login
-            print(f"Login set to: {'ENABLED' if cfg.policy_login else 'DISABLED'}")
-        elif choice == "5":
-            cfg.policy_lockers = not cfg.policy_lockers
-            print(f"Lockers set to: {'ENABLED' if cfg.policy_lockers else 'DISABLED'}")
-        elif choice == "6":
             if not cfg.policy_sshd:
                 print("\nNotice: Enabling Face Unlock for SSH will attempt camera access on the local host machine during remote logins.")
                 confirm = input("Enable Face Unlock for SSH? [y/N]: ").strip().lower()
@@ -841,14 +820,14 @@ def _interactive_config_menu(cfg: FaceUnlockConfig) -> int:
             else:
                 cfg.policy_sshd = False
             print(f"SSH set to: {'ENABLED' if cfg.policy_sshd else 'DISABLED'}")
-        elif choice == "7":
+        elif choice == "5":
             cfg.show_feedback = not cfg.show_feedback
             print(f"Terminal feedback: {'ENABLED' if cfg.show_feedback else 'DISABLED'}")
-        elif choice == "8":
+        elif choice == "6":
             cycle = {"animated": "clean", "clean": "quiet", "quiet": "animated"}
             cfg.feedback_style = cycle.get(cfg.feedback_style.lower(), "animated")
             print(f"Feedback style set to: {cfg.feedback_style.upper()}")
-        elif choice == "9":
+        elif choice == "7":
             try:
                 raw_t = input(f"Enter new timeout in seconds (1.0 - 10.0) [{cfg.max_timeout}]: ").strip()
                 if raw_t:
@@ -860,7 +839,7 @@ def _interactive_config_menu(cfg: FaceUnlockConfig) -> int:
                         print("Value must be between 1.0 and 10.0")
             except ValueError:
                 print("Invalid number.")
-        elif choice == "10":
+        elif choice == "8":
             print("\nSecurity Profiles:")
             print("  [L] Low / Convenient   (Threshold: 0.30, Liveness: 0.45, Timeout: 2.5s)")
             print("  [M] Medium / Balanced  (Threshold: 0.33, Liveness: 0.55, Timeout: 3.5s)")
@@ -883,7 +862,7 @@ def _interactive_config_menu(cfg: FaceUnlockConfig) -> int:
                 except ValueError:
                     print("Invalid numeric values.")
             print(f"Security mode set to: {cfg.security_mode.upper()}")
-        elif choice == "11":
+        elif choice == "9":
             if tpm_supported:
                 cfg.use_tpm = not cfg.use_tpm
                 print(f"TPM 2.0 sealing set to: {'ENABLED' if cfg.use_tpm else 'DISABLED'}")
@@ -901,15 +880,14 @@ def _interactive_config_menu(cfg: FaceUnlockConfig) -> int:
             else:
                 integrator.disable_service("polkit-1")
 
-            if cfg.policy_gdm:
-                integrator.enable_service("gdm-password")
+            if cfg.policy_lockscreen:
+                integrator.enable_service("lockscreen")
             else:
-                integrator.disable_service("gdm-password")
+                integrator.disable_service("lockscreen")
 
-            if cfg.policy_login:
-                integrator.enable_service("login")
-            else:
-                integrator.disable_service("login")
+            # Always ensure session login managers are disabled/cleaned up to prevent keyring issues
+            integrator.disable_service("gdm-password")
+            integrator.disable_service("login")
 
             if cfg.policy_sshd and integrator.is_service_available("sshd"):
                 integrator.enable_service("sshd")
@@ -955,8 +933,17 @@ def cmd_config(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
             cfg.feedback_style = val.lower()
         elif key in ("show_feedback", "pam.show_feedback"):
             cfg.show_feedback = val.lower() in ("true", "1", "yes")
+        elif key in ("lockscreen", "policy_lockscreen", "policies.lockscreen", "lockers"):
+            cfg.policy_lockscreen = val.lower() in ("true", "1", "yes")
+        elif key in ("sudo", "policies.sudo"):
+            cfg.policy_sudo = val.lower() in ("true", "1", "yes")
+        elif key in ("polkit", "policies.polkit"):
+            cfg.policy_polkit = val.lower() in ("true", "1", "yes")
         elif key in ("ssh", "sshd", "policies.sshd"):
             cfg.policy_sshd = val.lower() in ("true", "1", "yes")
+        elif any(k in key for k in ("gdm", "login", "sddm", "lightdm")):
+            print("\033[93m[!] Session login managers (GDM, SDDM, login) are disabled by design to protect user keyrings.\033[0m")
+            return 1
         else:
             print(f"Unknown configuration key: {key}")
             return 1
@@ -976,7 +963,7 @@ def cmd_config(args: argparse.Namespace, cfg: FaceUnlockConfig) -> int:
     print(f" Max Timeout:          {cfg.max_timeout:.1f}s")
     print(f" TPM 2.0 Sealing:      {'Active' if cfg.use_tpm else 'Disabled'}")
     print(f" Terminal Feedback:    {'Enabled' if cfg.show_feedback else 'Disabled'} ({cfg.feedback_style})")
-    print(f" Policies: Sudo={cfg.policy_sudo}, Polkit={cfg.policy_polkit}, GDM={cfg.policy_gdm}, Login={cfg.policy_login}, SSH={cfg.policy_sshd}")
+    print(f" Policies: Sudo={cfg.policy_sudo}, Polkit={cfg.policy_polkit}, LockScreen={cfg.policy_lockscreen}, SSH={cfg.policy_sshd}")
     print("=" * 65)
     return 0
 
@@ -1025,9 +1012,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_prof.add_argument("profile", nargs="?", choices=["convenient", "balanced", "strict"], help="Security profile")
 
     # service
-    p_srv = subparsers.add_parser("service", help="Manage PAM service integrations (gdm, polkit, sudo, etc.)")
+    p_srv = subparsers.add_parser("service", help="Manage PAM service integrations (lockscreen, polkit-1, sudo, etc.)")
     p_srv.add_argument("action", choices=["list", "enable", "disable"], default="list", nargs="?")
-    p_srv.add_argument("service", nargs="?", help="Service name (e.g. gdm-password, polkit-1, sudo)")
+    p_srv.add_argument("service", nargs="?", help="Service name (e.g. lockscreen, polkit-1, sudo)")
 
     # config
     p_cfg = subparsers.add_parser("config", help="View or modify configuration")

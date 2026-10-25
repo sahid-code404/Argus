@@ -20,15 +20,23 @@ from typing import Dict, List, Optional
 
 KNOWN_SERVICES = {
     "sudo": "Sudo Privilege Elevation",
-    "gdm-password": "GDM (GNOME Display Manager / Lock Screen)",
     "polkit-1": "Polkit (GUI Administration Dialogs)",
-    "login": "Console / Virtual Terminal Login",
+    "lockscreen": "Desktop Lock Screen (screensavers & screen lockers)",
     "sshd": "OpenSSH Daemon (SSH remote logins)",
-    "sddm": "SDDM (KDE Plasma Display Manager)",
-    "lightdm": "LightDM (XFCE / Cinnamon / MATE)",
-    "swaylock": "Swaylock Screen Locker",
-    "hyprlock": "Hyprlock Screen Locker",
 }
+
+LOCKSCREEN_SERVICES = [
+    "gnome-screensaver",
+    "swaylock",
+    "hyprlock",
+    "waylock",
+    "i3lock",
+    "cinnamon-screensaver",
+    "mate-screensaver",
+    "xfce4-screensaver",
+    "light-locker",
+    "vlock",
+]
 
 PAM_DIR_ETC = Path("/etc/pam.d")
 PAM_DIR_LIB = Path("/usr/lib/pam.d")
@@ -52,6 +60,13 @@ class PamIntegrator:
 
     def get_service_path(self, service: str) -> Optional[Path]:
         """Find the PAM configuration file in /etc/pam.d or /usr/lib/pam.d."""
+        if service in ("lockscreen", "lockers", "screensaver"):
+            for srv in LOCKSCREEN_SERVICES:
+                p = self.get_service_path(srv)
+                if p is not None:
+                    return p
+            return PAM_DIR_ETC / "gnome-screensaver"
+
         etc_path = PAM_DIR_ETC / service
         if etc_path.exists():
             return etc_path
@@ -62,10 +77,20 @@ class PamIntegrator:
 
     def is_service_available(self, service: str) -> bool:
         """Check if the service exists on this Linux installation."""
+        if service in ("lockscreen", "lockers", "screensaver"):
+            return True
         return self.get_service_path(service) is not None
 
     def is_service_enabled(self, service: str) -> bool:
         """Check if Argus is enabled in /etc/pam.d/<service>."""
+        if service in ("lockscreen", "lockers", "screensaver"):
+            for srv in LOCKSCREEN_SERVICES:
+                if self._is_single_service_enabled(srv):
+                    return True
+            return False
+        return self._is_single_service_enabled(service)
+
+    def _is_single_service_enabled(self, service: str) -> bool:
         etc_path = PAM_DIR_ETC / service
         if not etc_path.exists():
             return False
@@ -78,6 +103,36 @@ class PamIntegrator:
 
     def enable_service(self, service: str) -> bool:
         """Enable Argus for target PAM service with automatic backup."""
+        if any(k in service for k in ("gdm", "sddm", "lightdm", "login")):
+            # Explicitly disallow session login managers to protect user keyrings
+            return False
+
+        if service in ("lockscreen", "lockers", "screensaver"):
+            enabled_any = False
+            for srv in LOCKSCREEN_SERVICES:
+                if self.is_service_available(srv):
+                    if self._enable_single_service(srv):
+                        enabled_any = True
+            if not enabled_any:
+                gnome_path = PAM_DIR_ETC / "gnome-screensaver"
+                try:
+                    content = (
+                        f"#%PAM-1.0\n"
+                        f"{self.pam_rule}"
+                        f"auth       include      password-auth\n"
+                        f"account    include      password-auth\n"
+                    )
+                    gnome_path.write_text(content, encoding="utf-8")
+                    enabled_any = True
+                except Exception:
+                    pass
+            # Always ensure gdm-password is not hooked
+            self._disable_single_service("gdm-password")
+            return enabled_any
+
+        return self._enable_single_service(service)
+
+    def _enable_single_service(self, service: str) -> bool:
         if not self.is_service_available(service):
             return False
 
@@ -117,7 +172,6 @@ class PamIntegrator:
             # Find the best insertion point in auth section
             insert_idx = 0
             for idx, line in enumerate(clean_lines):
-                # Skip comments and selinux lines
                 stripped = line.strip()
                 if stripped.startswith("#") or "pam_selinux" in stripped or not stripped:
                     insert_idx = idx + 1
@@ -136,6 +190,13 @@ class PamIntegrator:
 
     def disable_service(self, service: str) -> bool:
         """Remove Argus from target PAM service."""
+        if service in ("lockscreen", "lockers", "screensaver"):
+            for srv in LOCKSCREEN_SERVICES:
+                self._disable_single_service(srv)
+            return True
+        return self._disable_single_service(service)
+
+    def _disable_single_service(self, service: str) -> bool:
         etc_path = PAM_DIR_ETC / service
         if not etc_path.exists():
             return False
@@ -184,7 +245,7 @@ def main() -> int:
         return 0
 
     if len(sys.argv) < 3:
-        print("Error: service name required (e.g., sudo, gdm-password, polkit-1)")
+        print("Error: service name required (e.g., sudo, polkit-1, lockscreen)")
         return 1
 
     service = sys.argv[2]

@@ -48,3 +48,9 @@ def test_config_security_modes_and_policies(tmp_path):
     assert loaded.policy_sshd is True
     assert loaded.feedback_style == "quiet"
     assert loaded.is_service_enabled("sshd") is True
+    assert loaded.is_service_enabled("sudo") is True
+    assert loaded.is_service_enabled("polkit-1") is True
+    assert loaded.is_service_enabled("swaylock") is True
+    assert loaded.is_service_enabled("gnome-screensaver") is True
+    assert loaded.is_service_enabled("gdm-password") is False
+    assert loaded.is_service_enabled("login") is False

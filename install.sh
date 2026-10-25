@@ -222,12 +222,11 @@ echo -e "  ${C_GREEN}✔${C_RESET} Security Profile Configured: ${C_BOLD}${SECUR
 # -----------------------------------------------------------------
 # Step 4: PAM Service Configuration & Keyring Notice
 # -----------------------------------------------------------------
-echo -e "\n${C_BOLD}--> Step 4/6: PAM Service Integrations & Keyring Notice...${C_RESET}"
+echo -e "\n${C_BOLD}--> Step 4/6: PAM Service Integrations...${C_RESET}"
 
 ENABLE_SUDO="true"
 ENABLE_POLKIT="true"
-ENABLE_LOGIN="false"
-ENABLE_GDM="false"
+ENABLE_LOCKSCREEN="true"
 USE_TPM="false"
 
 if [ "$INTERACTIVE" -eq 1 ]; then
@@ -241,23 +240,10 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     polkit_ans="${polkit_ans:-Y}"
     [[ ! "$polkit_ans" =~ ^[Yy]$ ]] && ENABLE_POLKIT="false"
 
-    # Console Login
-    read -rp " Enable Argus for console / virtual terminal login? [y/N]: " login_ans
-    login_ans="${login_ans:-N}"
-    [[ "$login_ans" =~ ^[Yy]$ ]] && ENABLE_LOGIN="true"
-
-    # GDM (GNOME Display Manager / Lock Screen)
-    echo -e "\n  ${C_YELLOW}─────────────────────────────────────────────────────────────────${C_RESET}"
-    echo -e "  ${C_YELLOW}${C_BOLD}⚠️  IMPORTANT GNOME KEYRING & SECRET SERVICE NOTICE:${C_RESET}"
-    echo -e "  ${C_DIM}On Linux (GNOME, GDM), your login password is used by oo7-daemon /${C_RESET}"
-    echo -e "  ${C_DIM}gnome-keyring to decrypt your saved passwords and web sessions.${C_RESET}"
-    echo -e "  ${C_DIM}Logging in at cold boot via biometrics will leave the keyring locked,${C_RESET}"
-    echo -e "  ${C_DIM}causing browsers (Chrome, Brave, etc.) to appear signed out until you${C_RESET}"
-    echo -e "  ${C_DIM}enter your password. (Unlocking from lock screen works normally).${C_RESET}"
-    echo -e "  ${C_YELLOW}─────────────────────────────────────────────────────────────────${C_RESET}"
-    read -rp " Enable Argus for GDM login anyway? [y/N]: " gdm_ans
-    gdm_ans="${gdm_ans:-N}"
-    [[ "$gdm_ans" =~ ^[Yy]$ ]] && ENABLE_GDM="true"
+    # Desktop Lock Screen
+    read -rp " Enable Argus for desktop lock screen unlock? [Y/n]: " lock_ans
+    lock_ans="${lock_ans:-Y}"
+    [[ ! "$lock_ans" =~ ^[Yy]$ ]] && ENABLE_LOCKSCREEN="false"
 
     # TPM 2.0
     if [ "$TPM_SUPPORTED" -eq 1 ]; then
@@ -269,8 +255,7 @@ if [ "$INTERACTIVE" -eq 1 ]; then
 else
     ENABLE_SUDO="true"
     ENABLE_POLKIT="true"
-    ENABLE_LOGIN="false"
-    ENABLE_GDM="false"
+    ENABLE_LOCKSCREEN="true"
     [ "$TPM_SUPPORTED" -eq 1 ] && USE_TPM="true"
 fi
 
@@ -346,10 +331,8 @@ security_mode = $SECURITY_PROFILE
 
 [policies]
 sudo = $ENABLE_SUDO
-gdm = $ENABLE_GDM
 polkit = $ENABLE_POLKIT
-login = $ENABLE_LOGIN
-lockers = true
+lockscreen = $ENABLE_LOCKSCREEN
 sshd = false
 
 [pam]
@@ -401,8 +384,11 @@ fi
 PYTHON_CMD="$INSTALL_PREFIX/venv/bin/python"
 [ "$ENABLE_SUDO" = "true" ] && "$PYTHON_CMD" -m argus.pam_integrator enable sudo >/dev/null 2>&1 || "$PYTHON_CMD" -m argus.pam_integrator disable sudo >/dev/null 2>&1
 [ "$ENABLE_POLKIT" = "true" ] && "$PYTHON_CMD" -m argus.pam_integrator enable polkit-1 >/dev/null 2>&1 || "$PYTHON_CMD" -m argus.pam_integrator disable polkit-1 >/dev/null 2>&1
-[ "$ENABLE_LOGIN" = "true" ] && "$PYTHON_CMD" -m argus.pam_integrator enable login >/dev/null 2>&1 || "$PYTHON_CMD" -m argus.pam_integrator disable login >/dev/null 2>&1
-[ "$ENABLE_GDM" = "true" ] && "$PYTHON_CMD" -m argus.pam_integrator enable gdm-password >/dev/null 2>&1 || "$PYTHON_CMD" -m argus.pam_integrator disable gdm-password >/dev/null 2>&1
+[ "$ENABLE_LOCKSCREEN" = "true" ] && "$PYTHON_CMD" -m argus.pam_integrator enable lockscreen >/dev/null 2>&1 || "$PYTHON_CMD" -m argus.pam_integrator disable lockscreen >/dev/null 2>&1
+
+# Always ensure session login managers are disabled to protect user keyrings
+"$PYTHON_CMD" -m argus.pam_integrator disable gdm-password >/dev/null 2>&1 || true
+"$PYTHON_CMD" -m argus.pam_integrator disable login >/dev/null 2>&1 || true
 
 # Sync existing enrolled user faces if present
 for legacy_src in "$TARGET_HOME/.config/argus/faces" "$TARGET_HOME/.config/faceunlock/faces" "/etc/faceunlock/faces"; do
